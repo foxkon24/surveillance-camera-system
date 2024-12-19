@@ -6,5 +6,5 @@ cd D:\xampp\htdocs\system\cam
 
 cd %~dp0
 
-start "Camera-System Main" python app.py
+python app.py
 
