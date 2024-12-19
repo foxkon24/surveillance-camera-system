@@ -440,6 +440,47 @@ def start_streaming(camera):
         logging.error(f"Error in start_streaming for camera {camera['id']}: {e}")
         raise
 
+def get_or_start_streaming(camera):
+    """既存のストリーミングプロセスを取得するか、新しく開始する"""
+    if camera['id'] not in streaming_processes:
+        try:
+            camera_tmp_dir = os.path.join(TMP_PATH, camera['id'])
+            ensure_directory_exists(camera_tmp_dir)
+
+            hls_path = os.path.join(camera_tmp_dir, f"{camera['id']}.m3u8").replace('/', '\\')
+            log_path = os.path.join(camera_tmp_dir, f"{camera['id']}.log").replace('/', '\\')
+
+            if os.path.exists(hls_path):
+                os.remove(hls_path)
+
+            ffmpeg_command = [
+                'ffmpeg', '-i', camera['rtsp_url'],
+                '-c:v', 'copy',
+                '-c:a', 'aac',
+                '-hls_time', '1',  # セグメント長を短くして同期精度を向上
+                '-hls_list_size', '3',
+                '-hls_flags', 'delete_segments+program_date_time',  # タイムスタンプを追加
+                '-hls_segment_type', 'mpegts',  # MPEGTSセグメントを使用
+                '-hls_allow_cache', '0',
+                hls_path
+            ]
+
+            with open(log_path, 'w') as log_file:
+                process = subprocess.Popen(
+                    ffmpeg_command,
+                    stdout=log_file,
+                    stderr=log_file,
+                    creationflags=subprocess.CREATE_NO_WINDOW
+                )
+                streaming_processes[camera['id']] = process
+
+            logging.info(f"Started streaming for camera {camera['id']}")
+            return True
+        except Exception as e:
+            logging.error(f"Error starting streaming for camera {camera['id']}: {e}")
+            return False
+    return True
+
 @app.route('/start_recording', methods=['POST'])
 def start_recording_route():
     data = request.json
@@ -473,7 +514,7 @@ def stop_all_recordings_route():
 def index():
     cameras = read_config()
     for camera in cameras:
-        threading.Thread(target=start_streaming, args=(camera,)).start()
+        get_or_start_streaming(camera)
     time.sleep(5)
     return render_template('index.html', cameras=cameras)
 
@@ -481,7 +522,7 @@ def index():
 def index_admin():
     cameras = read_config()
     for camera in cameras:
-        threading.Thread(target=start_streaming, args=(camera,)).start()
+        get_or_start_streaming(camera)
     time.sleep(5)
     return render_template('admin.html', cameras=cameras)
 
