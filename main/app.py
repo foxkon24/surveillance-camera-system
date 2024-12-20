@@ -18,10 +18,16 @@ BACKUP_PATH = 'D:\\xampp\\htdocs\\system\\cam\\backup'
 
 MAX_RECORDING_HOURS = 1  # 最大録画時間（時間）
 
+# グローバル変数としてストリーミングプロセスを管理
+streaming_processes = {}
+
 recording_processes = {}
 recording_threads = {}
 
 recording_start_times = {}  # 録画開始時刻を保持する辞書
+
+# グローバル変数として監視スレッドの状態を管理
+monitor_thread = None
 
 # ロギングの設定
 logging.basicConfig(
@@ -166,9 +172,67 @@ def get_record_file_path(camera_id):
     logging.info(f"Generated file path: {full_path}")
     return full_path
 
+def get_free_space(path):
+    """
+    指定されたパスの空き容量をバイト単位で返す
+    """
+    try:
+        if os.path.exists(path):
+            # Windowsの場合はドライブのルートパスを取得
+            if os.name == 'nt':
+                drive = os.path.splitdrive(os.path.abspath(path))[0]
+                free_bytes = psutil.disk_usage(drive).free
+            else:
+                free_bytes = psutil.disk_usage(path).free
+            logging.info(f"Free space in {path}: {free_bytes / (1024*1024*1024):.2f} GB")
+            return free_bytes
+        else:
+            logging.warning(f"Path does not exist: {path}")
+            return 0
+    except Exception as e:
+        logging.error(f"Error getting free space for {path}: {e}")
+        return 0
+
 def start_recording(camera_id, rtsp_url):
-    ensure_directory_exists(os.path.join(RECORD_PATH, camera_id))
-    start_new_recording(camera_id, rtsp_url)
+    try:
+        # 既存のプロセスが存在する場合は終了
+        if camera_id in streaming_processes:
+            stop_recording(camera_id)
+
+        # 録画開始処理
+        camera_tmp_dir = os.path.join(RECORD_PATH, camera_id)
+        ensure_directory_exists(camera_tmp_dir)
+
+        # ディスク容量チェック（最小1GB必要）
+        required_space = 1024 * 1024 * 1024  # 1GB in bytes
+        available_space = get_free_space(camera_tmp_dir)
+
+        if available_space < required_space:
+            error_msg = f"Insufficient disk space for camera {camera_id}. Available: {available_space / (1024*1024*1024):.2f} GB, Required: 1 GB"
+            logging.error(error_msg)
+            raise Exception(error_msg)
+
+        start_new_recording(camera_id, rtsp_url)
+
+    except Exception as e:
+        error_msg = f"Error starting recording for camera {camera_id}: {e}"
+        logging.error(error_msg)
+        raise Exception(error_msg)
+
+def check_recording_process(camera_id):
+    if camera_id in streaming_processes:
+        process = streaming_processes[camera_id]
+        # プロセスの状態を確認
+        if process.poll() is not None:  # プロセスが終了している場合
+            logging.warning(f"Recording process for camera {camera_id} has died. Restarting...")
+            del streaming_processes[camera_id]
+            # カメラの設定を読み込み
+            cameras = read_config()
+            for camera in cameras:
+                if camera['id'] == camera_id:
+                    # 録画を再開
+                    start_recording(camera_id, camera['rtsp_url'])
+                    break
 
 def finalize_recording(file_path):
     try:
@@ -533,6 +597,40 @@ def backup_recordings():
     camera_names = read_config_backup()
     return render_template('backup_recordings.html', recordings=recordings, camera_names=camera_names)
 
+def monitor_recording_processes():
+    while True:
+        try:
+            cameras = read_config()
+            for camera in cameras:
+                camera_id = camera['id']
+                if camera_id in recording_processes:
+                    recording_info = recording_processes[camera_id]
+                    process = recording_info['process']
+
+                    # プロセスの状態を確認
+                    if process.poll() is not None:  # プロセスが終了している場合
+                        logging.warning(f"Recording process for camera {camera_id} has died. Restarting...")
+
+                        # 録画を再開
+                        try:
+                            stop_recording(camera_id)  # 念のため停止処理を実行
+                            time.sleep(2)  # 少し待機
+                            start_recording(camera_id, camera['rtsp_url'])
+                            logging.info(f"Successfully restarted recording for camera {camera_id}")
+                        except Exception as e:
+                            logging.error(f"Failed to restart recording for camera {camera_id}: {e}")
+
+        except Exception as e:
+            logging.error(f"Error in monitor_recording_processes: {e}")
+
+        time.sleep(30)  # 30秒ごとにチェック
+
 if __name__ == '__main__':
+    # アプリケーション起動時の処理
+    if not monitor_thread or not monitor_thread.is_alive():
+        monitor_thread = threading.Thread(target=monitor_recording_processes, daemon=True)
+        monitor_thread.start()
+        logging.info("Started recording process monitor thread")
+
     app.run(host='0.0.0.0', port=5000, debug=False)
 
