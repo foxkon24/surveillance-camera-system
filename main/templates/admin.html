@@ -23,76 +23,9 @@
         <div class="msg">
             
         </div>
-        <div class="container">
-            <div class="grid">
-                {% for camera in cameras %}
-                    <div class="camera">
-                        <h4>{{ camera.name }}</h4>
-                        <video id="video{{ camera.id }}" autoplay muted playsinline style="width: 320px; height: 240px;"></video>
-                    </div>
-                {% endfor %}
-            </div>
-        </div>
         <footer>&nbsp;&nbsp;Copyright&copy;&nbsp;&nbsp;2024&nbsp;&nbsp;株式会社&nbsp;共立電機製作所&nbsp;&nbsp;All&nbsp;rights&nbsp;reserved.</footer>
     </div>
     <script>
-        window.onload = function() {
-            {% for camera in cameras %}
-                (function(cameraId) {
-                    function checkFileExists(url, callback) {
-                        fetch(url, { method: 'HEAD' })
-                            .then(res => {
-                                if (res.ok) {
-                                    callback(true);
-                                } else {
-                                    callback(false);
-                                }
-                            })
-                            .catch(() => callback(false));
-                    }
-
-                    const filePath = '/system/cam/tmp/' + cameraId + '/' + cameraId + '.m3u8';
-                    const video = document.getElementById('video' + cameraId);
-
-                    function startPlaying() {
-                        if (Hls.isSupported()) {
-                            var hls = new Hls();
-                            hls.loadSource(filePath);
-                            hls.attachMedia(video);
-                            hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                                video.play();
-                            });
-                        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                            video.src = filePath;
-                            video.addEventListener('loadedmetadata', function() {
-                                video.play();
-                            });
-                        } else {
-                            console.error('This device does not support HLS streaming.');
-                        }
-                    }
-
-                    function attemptToStartPlaying(retries) {
-                        if (retries === 0) {
-                            console.error('Failed to load HLS stream after multiple attempts');
-                            return;
-                        }
-                        checkFileExists(filePath, function(exists) {
-                            if (exists) {
-                                startPlaying();
-                            } else {
-                                setTimeout(function() {
-                                    attemptToStartPlaying(retries - 1);
-                                }, 1000);
-                            }
-                        });
-                    }
-
-                    attemptToStartPlaying(10);
-                })('{{ camera.id }}');
-            {% endfor %}
-        };
-
         function startAllRecordings() {
             fetch('/stop_all_recordings', { method: 'POST' })
                 .then(response => response.json())
