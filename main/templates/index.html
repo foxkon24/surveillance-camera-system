@@ -18,15 +18,9 @@
             </ul>
         </nav>
         <div class="container">
-            <select id="cameraSelect">
-                <option value="all">全箇所</option>
-                {% for camera in cameras %}
-                    <option value="{{ camera.id }}">{{ camera.name }}</option>
-                {% endfor %}
-            </select>
             <div class="grid">
                 {% for camera in cameras %}
-                    <div class="camera" id="camera{{ camera.id }}">
+                    <div class="camera">
                         <h4>{{ camera.name }}</h4>
                         <video id="video{{ camera.id }}" autoplay muted playsinline style="width: 320px; height: 240px;"></video>
                     </div>
@@ -37,18 +31,6 @@
     </div>
     <script>
         window.onload = function() {
-            const cameraSelect = document.getElementById('cameraSelect');
-            cameraSelect.addEventListener('change', function() {
-                const selectedCamera = cameraSelect.value;
-                document.querySelectorAll('.camera').forEach(function(cameraDiv) {
-                    if (selectedCamera === 'all' || cameraDiv.id === 'camera' + selectedCamera) {
-                        cameraDiv.style.display = '';
-                    } else {
-                        cameraDiv.style.display = 'none';
-                    }
-                });
-            });
-
             {% for camera in cameras %}
                 (function(cameraId) {
                     function checkFileExists(url, callback) {
