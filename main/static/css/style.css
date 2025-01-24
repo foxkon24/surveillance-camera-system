@@ -118,6 +118,15 @@ video {
     aspect-ratio: 4/3;
     background: #000;
     border-radius: 4px;
+    object-fit: contain; /* 映像がはみ出さないように調整 */
+}
+
+video-single {
+    width: 100%;
+    height: auto;
+    background: #000;
+    border-radius: 4px;
+    object-fit: contain; /* 映像がはみ出さないように調整 */
 }
 
 button {
