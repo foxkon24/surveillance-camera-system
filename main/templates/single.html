@@ -15,7 +15,7 @@
         <div class="container">
             <div class="camera">
                 <h4>{{ camera.name }}</h4>
-                <video id="video{{ camera.id }}" controls autoplay playsinline style="width: 100%; max-width: 960px; height: auto;"></video>
+                <video id="video{{ camera.id }}" autoplay playsinline style="width: 100%; max-width: 1024px; height: auto;"></video>
             </div>
         </div>
         <footer>&nbsp;&nbsp;Copyright&copy;&nbsp;&nbsp;2024&nbsp;&nbsp;株式会社&nbsp;共立電機製作所&nbsp;&nbsp;All&nbsp;rights&nbsp;reserved.</footer>
@@ -44,7 +44,7 @@
                     hls.loadSource(filePath);
                     hls.attachMedia(video);
                     hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                        video.play();
+                        video.play()
                     });
                 } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                     video.src = filePath;
