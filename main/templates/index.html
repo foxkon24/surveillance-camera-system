@@ -22,7 +22,7 @@
                 {% for camera in cameras %}
                     <div class="camera">
                         <h4>{{ camera.name }}</h4>
-                        <video id="video{{ camera.id }}" autoplay muted playsinline style="width: 320px; height: 240px;"></video>
+                        <video id="video{{ camera.id }}" controls autoplay playsinline style="width: 320px; height: 240px;"></video>
                     </div>
                 {% endfor %}
             </div>
