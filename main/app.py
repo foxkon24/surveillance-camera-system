@@ -582,6 +582,21 @@ def index():
     time.sleep(5)
     return render_template('index.html', cameras=cameras)
 
+@app.route('/system/cam/<camera_id>/')
+def camera_view(camera_id):
+    cameras = read_config()
+    # 指定されたカメラIDのカメラ情報のみを取得
+    target_camera = next((camera for camera in cameras if camera['id'] == camera_id), None)
+
+    if target_camera is None:
+        return "Camera not found", 404
+
+    # 指定されたカメラのストリーミングを開始
+    get_or_start_streaming(target_camera)
+    time.sleep(5)
+
+    return render_template('camera.html', camera=target_camera)
+
 @app.route('/system/cam/admin/')
 def index_admin():
     cameras = read_config()
