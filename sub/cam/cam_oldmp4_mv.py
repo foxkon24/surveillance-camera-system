@@ -2,6 +2,7 @@ import os
 import shutil
 from datetime import datetime, timedelta
 import re
+from moviepy.editor import VideoFileClip
 
 def create_directory_if_not_exists(directory):
     """指定されたディレクトリが存在しない場合、作成する"""
@@ -19,6 +20,19 @@ def get_camera_numbers():
             camera_numbers.append(number)
 
     return camera_numbers
+
+def check_video_duration(file_path):
+    """動画ファイルの長さを確認する
+    Returns:
+        bool: 動画の長さが0秒でない場合はTrue、0秒の場合はFalse
+    """
+    try:
+        with VideoFileClip(file_path) as clip:
+            # 動画の長さが0秒より大きいかチェック
+            return clip.duration > 0
+    except Exception as e:
+        print(f"動画ファイルの長さ確認中にエラー発生: {str(e)}")
+        return False
 
 def process_mp4_files():
     """MP4ファイルの処理を実行する"""
@@ -70,8 +84,15 @@ def process_mp4_files():
                             # ファイルを移動
                             shutil.move(source_path, dest_path)
                             print(f"移動完了: {filename}")
+
+                            # 移動後のファイルの動画長をチェック
+                            if not check_video_duration(dest_path):
+                                # 動画長が0秒の場合、ファイルを削除
+                                os.remove(dest_path)
+                                print(f"動画長が0秒のため削除: {filename}")
+
                         except Exception as e:
-                            print(f"エラー - {filename}の移動中: {str(e)}")
+                            print(f"エラー - {filename}の処理中: {str(e)}")
 
 if __name__ == "__main__":
     try:
