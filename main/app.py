@@ -582,21 +582,6 @@ def index():
     time.sleep(5)
     return render_template('index.html', cameras=cameras)
 
-@app.route('/system/cam/<camera_id>/')
-def camera_view(camera_id):
-    cameras = read_config()
-    # 指定されたカメラIDのカメラ情報のみを取得
-    target_camera = next((camera for camera in cameras if camera['id'] == camera_id), None)
-
-    if target_camera is None:
-        return "Camera not found", 404
-
-    # 指定されたカメラのストリーミングを開始
-    get_or_start_streaming(target_camera)
-    time.sleep(5)
-
-    return render_template('camera.html', camera=target_camera)
-
 @app.route('/system/cam/admin/')
 def index_admin():
     cameras = read_config()
@@ -604,6 +589,19 @@ def index_admin():
         get_or_start_streaming(camera)
     time.sleep(5)
     return render_template('admin.html', cameras=cameras)
+
+@app.route('/system/cam/single')
+def index_single():
+    camera_id = request.args.get('id')
+    if not camera_id:
+        return 'Camera ID not specified', 400
+    cameras = read_config()
+    target_camera = next((camera for camera in cameras if camera['id'] == camera_id), None)
+    if target_camera is None:
+        return 'Camera not found', 404
+    get_or_start_streaming(target_camera)
+    time.sleep(5)
+    return render_template('single.html', camera=target_camera)
 
 @app.route('/system/cam/backup/')
 def backup_recordings():
