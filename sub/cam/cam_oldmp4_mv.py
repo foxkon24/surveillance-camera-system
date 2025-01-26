@@ -2,7 +2,7 @@ import os
 import shutil
 from datetime import datetime, timedelta
 import re
-from moviepy.editor import VideoFileClip
+import cv2
 
 def create_directory_if_not_exists(directory):
     """指定されたディレクトリが存在しない場合、作成する"""
@@ -27,9 +27,24 @@ def check_video_duration(file_path):
         bool: 動画の長さが0秒でない場合はTrue、0秒の場合はFalse
     """
     try:
-        with VideoFileClip(file_path) as clip:
-            # 動画の長さが0秒より大きいかチェック
-            return clip.duration > 0
+        cap = cv2.VideoCapture(file_path)
+        if not cap.isOpened():
+            print(f"ファイルを開けません: {file_path}")
+            return False
+
+        # フレーム数を取得
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        # フレームレートを取得
+        fps = cap.get(cv2.CAP_PROP_FPS)
+
+        # キャプチャを解放
+        cap.release()
+
+        # 動画の長さを計算（秒）
+        duration = frame_count / fps if fps > 0 else 0
+
+        # 動画の長さが0秒より大きいかチェック
+        return duration > 0
     except Exception as e:
         print(f"動画ファイルの長さ確認中にエラー発生: {str(e)}")
         return False
@@ -81,15 +96,16 @@ def process_mp4_files():
                         dest_path = os.path.join(backup_dir, filename)
 
                         try:
+                            # 移動前に元ファイルの動画長をチェック
+                            if not check_video_duration(source_path):
+                                # 動画長が0秒の場合、ファイルを削除
+                                os.remove(source_path)
+                                print(f"動画長が0秒のため削除: {filename}")
+                                continue
+
                             # ファイルを移動
                             shutil.move(source_path, dest_path)
                             print(f"移動完了: {filename}")
-
-                            # 移動後のファイルの動画長をチェック
-                            if not check_video_duration(dest_path):
-                                # 動画長が0秒の場合、ファイルを削除
-                                os.remove(dest_path)
-                                print(f"動画長が0秒のため削除: {filename}")
 
                         except Exception as e:
                             print(f"エラー - {filename}の処理中: {str(e)}")
