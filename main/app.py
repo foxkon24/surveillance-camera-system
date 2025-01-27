@@ -518,14 +518,20 @@ def get_or_start_streaming(camera):
                 os.remove(hls_path)
 
             ffmpeg_command = [
-                'ffmpeg', '-i', camera['rtsp_url'],
+                'ffmpeg',
+                '-rtsp_transport', 'tcp',  # TCPトランスポートを使用
+                '-i', camera['rtsp_url'],
                 '-c:v', 'copy',
                 '-c:a', 'aac',
-                '-hls_time', '1',  # セグメント長を短くして同期精度を向上
-                '-hls_list_size', '3',
-                '-hls_flags', 'delete_segments+program_date_time',  # タイムスタンプを追加
+                '-hls_time', '2',          # セグメント長を2秒に設定
+                '-hls_list_size', '3',     # プレイリストのセグメント数
+                '-hls_flags', 'delete_segments+append_list',  # セグメントの自動削除と追加
                 '-hls_segment_type', 'mpegts',  # MPEGTSセグメントを使用
-                '-hls_allow_cache', '0',
+                '-hls_allow_cache', '0',    # キャッシュを無効化
+                '-reconnect', '1',          # 接続が切れた場合の再接続
+                '-reconnect_at_eof', '1',   
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '2',  # 最大再接続遅延
                 hls_path
             ]
 
@@ -537,6 +543,11 @@ def get_or_start_streaming(camera):
                     creationflags=subprocess.CREATE_NO_WINDOW
                 )
                 streaming_processes[camera['id']] = process
+
+            # プロセスが正常に起動したことを確認するために少し待機
+            time.sleep(2)
+            if process.poll() is not None:
+                raise Exception("FFmpeg process failed to start")
 
             logging.info(f"Started streaming for camera {camera['id']}")
             return True
