@@ -121,6 +121,13 @@ video {
     object-fit: contain; /* 映像がはみ出さないように調整 */
 }
 
+.video-container {
+    position: relative;
+    width: 100%;
+    max-width: 1024px;
+    margin: 0 auto;
+}
+
 button {
     margin: 10px;
     padding: 10px 20px;
