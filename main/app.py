@@ -524,7 +524,7 @@ def get_or_start_streaming(camera):
                 '-i', camera['rtsp_url'],
                 '-c:v', 'copy',            # ビデオコーデックをそのままコピー
                 '-c:a', 'aac',             # 音声コーデックをAACに設定
-                '-hls_time', '2',          # セグメント長を2秒に設定
+                '-hls_time', '1',          # セグメント長を1秒に設定
                 '-hls_list_size', '10',    # プレイリストのセグメント数を増加
                 '-hls_flags', 'delete_segments+append_list+program_date_time',  # セグメントの自動削除とタイムスタンプ
                 '-hls_segment_type', 'mpegts',  # MPEGTSセグメントを使用
