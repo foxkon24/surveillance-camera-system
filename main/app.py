@@ -519,19 +519,23 @@ def get_or_start_streaming(camera):
 
             ffmpeg_command = [
                 'ffmpeg',
-                '-rtsp_transport', 'tcp',  # TCPトランスポートを使用
+                '-rtsp_transport', 'tcp',   # TCPトランスポートを使用
+                '-fflags', '+genpts',       # 正確なタイムスタンプ生成
                 '-i', camera['rtsp_url'],
-                '-c:v', 'copy',
-                '-c:a', 'aac',
+                '-c:v', 'copy',            # ビデオコーデックをそのままコピー
+                '-c:a', 'aac',             # 音声コーデックをAACに設定
                 '-hls_time', '2',          # セグメント長を2秒に設定
-                '-hls_list_size', '3',     # プレイリストのセグメント数
-                '-hls_flags', 'delete_segments+append_list',  # セグメントの自動削除と追加
+                '-hls_list_size', '10',    # プレイリストのセグメント数を増加
+                '-hls_flags', 'delete_segments+append_list+program_date_time',  # セグメントの自動削除とタイムスタンプ
                 '-hls_segment_type', 'mpegts',  # MPEGTSセグメントを使用
                 '-hls_allow_cache', '0',    # キャッシュを無効化
                 '-reconnect', '1',          # 接続が切れた場合の再接続
-                '-reconnect_at_eof', '1',   
-                '-reconnect_streamed', '1',
-                '-reconnect_delay_max', '2',  # 最大再接続遅延
+                '-reconnect_at_eof', '1',   # ファイル終端での再接続
+                '-reconnect_streamed', '1', # ストリーミング再接続
+                '-reconnect_delay_max', '5',  # 最大再接続遅延を5秒に増加
+                '-g', '30',                # キーフレーム間隔
+                '-sc_threshold', '0',      # シーンチェンジでのキーフレーム挿入を無効化
+                '-max_muxing_queue_size', '1024',  # 多重化キューサイズを増加
                 hls_path
             ]
 
