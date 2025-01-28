@@ -22,13 +22,7 @@
                 {% for camera in cameras %}
                     <div class="camera">
                         <h4>{{ camera.name }}</h4>
-                        <video id="video{{ camera.id }}" 
-                               autoplay 
-                               playsinline 
-                               style="width: 320px; height: 240px;"
-                               x-webkit-airplay="allow"
-                               preload="auto">
-                        </video>
+                        <video id="video{{ camera.id }}" autoplay muted playsinline style="width: 320px; height: 240px;"></video>
                     </div>
                 {% endfor %}
             </div>
@@ -53,78 +47,22 @@
 
                     const filePath = '/system/cam/tmp/' + cameraId + '/' + cameraId + '.m3u8';
                     const video = document.getElementById('video' + cameraId);
-                    let hls = null;
-                    let checkPlaybackInterval = null;
 
-                    function initPlayer() {
-                        if (hls) {
-                            hls.destroy();
-                        }
-                        if (checkPlaybackInterval) {
-                            clearInterval(checkPlaybackInterval);
-                        }
-
+                    function startPlaying() {
                         if (Hls.isSupported()) {
-                            hls = new Hls({
-                                debug: true,
-                                maxBufferLength: 30,
-                                maxMaxBufferLength: 60,
-                                maxBufferSize: 60*1000*1000,
-                                maxBufferHole: 0.5,
-                                highBufferWatchdogPeriod: 5,
-                                liveSyncDurationCount: 15,
-                                liveMaxLatencyDurationCount: 20,
-                                liveDurationInfinity: true,
-                                enableWorker: true,
-                                manifestLoadingTimeOut: 20000,
-                                manifestLoadingMaxRetry: 6,
-                                manifestLoadingRetryDelay: 1000,
-                                levelLoadingTimeOut: 20000,
-                                levelLoadingMaxRetry: 6,
-                                levelLoadingRetryDelay: 1000
-                            });
-
+                            var hls = new Hls();
                             hls.loadSource(filePath);
                             hls.attachMedia(video);
-
-                            // 再生開始時の処理
                             hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                                video.play().catch(function(error) {
-                                    console.log('Playback error:', error);
-                                });
+                                video.play();
                             });
-
-                            // エラーハンドリング
-                            hls.on(Hls.Events.ERROR, function(event, data) {
-                                if (data.fatal) {
-                                    switch(data.type) {
-                                        case Hls.ErrorTypes.NETWORK_ERROR:
-                                            console.log('Network error, trying to recover...');
-                                            hls.startLoad();
-                                            break;
-                                        case Hls.ErrorTypes.MEDIA_ERROR:
-                                            console.log('Media error, trying to recover...');
-                                            hls.recoverMediaError();
-                                            break;
-                                        default:
-                                            console.log('Unrecoverable error, reloading player...');
-                                            setTimeout(initPlayer, 2000);
-                                            break;
-                                    }
-                                }
+                        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                            video.src = filePath;
+                            video.addEventListener('loadedmetadata', function() {
+                                video.play();
                             });
-
-                            // 再生監視
-                            let lastTime = 0;
-                            checkPlaybackInterval = setInterval(() => {
-                                if (video.currentTime === lastTime && !video.paused) {
-                                    console.log('Playback seems frozen, reloading stream...');
-                                    hls.stopLoad();
-                                    hls.startLoad();
-                                    video.play().catch(console.error);
-                                }
-                                lastTime = video.currentTime;
-                            }, 5000);
+                        } else {
+                            console.error('This device does not support HLS streaming.');
                         }
                     }
 
@@ -135,7 +73,7 @@
                         }
                         checkFileExists(filePath, function(exists) {
                             if (exists) {
-                                initPlayer();
+                                startPlaying();
                             } else {
                                 setTimeout(function() {
                                     attemptToStartPlaying(retries - 1);
@@ -144,17 +82,6 @@
                         });
                     }
 
-                    // クリーンアップ処理
-                    window.addEventListener('beforeunload', () => {
-                        if (checkPlaybackInterval) {
-                            clearInterval(checkPlaybackInterval);
-                        }
-                        if (hls) {
-                            hls.destroy();
-                        }
-                    });
-
-                    // 初期化
                     attemptToStartPlaying(10);
                 })('{{ camera.id }}');
             {% endfor %}
