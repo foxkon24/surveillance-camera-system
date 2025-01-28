@@ -482,10 +482,11 @@ def start_streaming(camera):
             os.remove(hls_path)
 
         ffmpeg_command = [
-            'ffmpeg', '-i', camera['rtsp_url'], 
+            'ffmpeg',
+            '-i', camera['rtsp_url'], 
             '-c:v', 'copy', 
             '-c:a', 'aac',
-            '-hls_time', '2', 
+            '-hls_time', '1', 
             '-hls_list_size', '3', 
             '-hls_flags', 'delete_segments',
             '-hls_allow_cache', '0',  # キャッシュを無効化
@@ -519,81 +520,25 @@ def get_or_start_streaming(camera):
 
             ffmpeg_command = [
                 'ffmpeg',
-                '-rtsp_transport', 'tcp',
-                '-fflags', '+genpts+igndts',
-                '-re',                      # 入力レートを維持
-                '-analyzeduration', '2147483647',  # 解析時間を最大に
-                '-probesize', '2147483647',       # プローブサイズを最大に
                 '-i', camera['rtsp_url'],
                 '-c:v', 'copy',
                 '-c:a', 'aac',
-                '-hls_time', '1',
-                '-hls_list_size', '15',
-                '-hls_flags', 'delete_segments+append_list+program_date_time+independent_segments+discont_start',
-                '-hls_segment_type', 'mpegts',
+                '-hls_time', '1',  # セグメント長を短くして同期精度を向上
+                '-hls_list_size', '3',
+                '-hls_flags', 'delete_segments+program_date_time',  # タイムスタンプを追加
+                '-hls_segment_type', 'mpegts',  # MPEGTSセグメントを使用
                 '-hls_allow_cache', '0',
-                '-reconnect', '1',
-                '-reconnect_at_eof', '1',
-                '-reconnect_streamed', '1',
-                '-reconnect_delay_max', '5',
-                '-timeout', '-1',           # タイムアウトを無効化
-                '-max_muxing_queue_size', '4096',
-                '-nostdin',                # 標準入力を無効化
-                '-loglevel', 'warning',    # ログレベルを設定
-                '-live_start_index', '-3',  # ライブストリームの開始インデックス
-                '-avoid_negative_ts', 'make_zero',  # 負のタイムスタンプを処理
                 hls_path
             ]
 
             with open(log_path, 'w') as log_file:
                 process = subprocess.Popen(
                     ffmpeg_command,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    stdout=log_file,
+                    stderr=log_file,
                     creationflags=subprocess.CREATE_NO_WINDOW
                 )
                 streaming_processes[camera['id']] = process
-
-                # エラー監視スレッドの作成
-                def monitor_process():
-                    while True:
-                        try:
-                            if process.poll() is not None:
-                                logging.error(f"FFmpeg process for camera {camera['id']} died unexpectedly")
-                                # プロセスの再起動
-                                del streaming_processes[camera['id']]
-                                get_or_start_streaming(camera)
-                                break
-
-                            # エラー出力の確認
-                            error_line = process.stderr.readline()
-                            if error_line:
-                                error_text = error_line.decode('utf-8', errors='ignore').strip()
-                                logging.warning(f"FFmpeg warning/error: {error_text}")
-
-                            # ストリームの存在確認
-                            if not os.path.exists(hls_path):
-                                logging.error(f"HLS file missing for camera {camera['id']}")
-                                # プロセスの再起動
-                                process.terminate()
-                                del streaming_processes[camera['id']]
-                                get_or_start_streaming(camera)
-                                break
-
-                        except Exception as e:
-                            logging.error(f"Error in monitor thread: {e}")
-                            break
-
-                        time.sleep(1)
-
-                # モニタリングスレッドの開始
-                monitor_thread = threading.Thread(target=monitor_process, daemon=True)
-                monitor_thread.start()
-
-            # プロセスが正常に起動したことを確認するために少し待機
-            time.sleep(2)
-            if process.poll() is not None:
-                raise Exception("FFmpeg process failed to start")
 
             logging.info(f"Started streaming for camera {camera['id']}")
             return True
