@@ -78,7 +78,6 @@
                         video.play().catch(function(error) {
                             console.log("Play failed:", error);
                             // 自動再生がブロックされた場合の処理
-                            video.muted = true;
                             video.play();
                         });
                     });
@@ -87,7 +86,6 @@
                     video.addEventListener('loadedmetadata', function() {
                         video.play().catch(function(error) {
                             console.log("Play failed:", error);
-                            video.muted = true;
                             video.play();
                         });
                     });
