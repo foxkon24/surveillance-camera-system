@@ -326,6 +326,9 @@ def start_new_recording(camera_id, rtsp_url):
             '-reconnect_delay_max', '2',  # 最大再接続遅延を2秒に設定
             '-c:v', 'copy',  # ビデオコーデックをそのままコピー
             '-c:a', 'aac',   # 音声コーデックをAACに設定
+            '-b:a', '128k',  # 音声ビットレート
+            '-ar', '44100',  # サンプリングレート
+            '-ac', '2',  # ステレオ音声
             '-movflags', '+faststart',  # ファストスタートフラグを設定
             '-y',  # 既存のファイルを上書き
             file_path
@@ -468,43 +471,6 @@ def stop_recording(camera_id):
     else:
         logging.warning(f"No recording process found for camera {camera_id}")
 
-def start_streaming(camera):
-    try:
-        camera_tmp_dir = os.path.join(TMP_PATH, camera['id'])
-        ensure_directory_exists(camera_tmp_dir)
-
-        # m3u8ファイルのパスをバックスラッシュで統一
-        hls_path = os.path.join(camera_tmp_dir, f"{camera['id']}.m3u8").replace('/', '\\')
-        log_path = os.path.join(camera_tmp_dir, f"{camera['id']}.log").replace('/', '\\')
-
-        # 既存のファイルが存在する場合は削除
-        if os.path.exists(hls_path):
-            os.remove(hls_path)
-
-        ffmpeg_command = [
-            'ffmpeg',
-            '-i', camera['rtsp_url'], 
-            '-c:v', 'copy', 
-            '-c:a', 'aac',
-            '-hls_time', '1', 
-            '-hls_list_size', '3', 
-            '-hls_flags', 'delete_segments',
-            '-hls_allow_cache', '0',  # キャッシュを無効化
-            hls_path
-        ]
-
-        with open(log_path, 'w') as log_file:
-            process = subprocess.Popen(
-                ffmpeg_command,
-                stdout=log_file,
-                stderr=log_file,
-                creationflags=subprocess.CREATE_NO_WINDOW  # Windowsでコンソールを表示しない
-            )
-
-    except Exception as e:
-        logging.error(f"Error in start_streaming for camera {camera['id']}: {e}")
-        raise
-
 def get_or_start_streaming(camera):
     """既存のストリーミングプロセスを取得するか、新しく開始する"""
     if camera['id'] not in streaming_processes:
@@ -523,6 +489,9 @@ def get_or_start_streaming(camera):
                 '-i', camera['rtsp_url'],
                 '-c:v', 'copy',
                 '-c:a', 'aac',
+                '-b:a', '128k',          # 音声ビットレート
+                '-ar', '44100',          # サンプリングレート
+                '-ac', '2',              # ステレオ音声
                 '-hls_time', '1',  # セグメント長を短くして同期精度を向上
                 '-hls_list_size', '3',
                 '-hls_flags', 'delete_segments+program_date_time',  # タイムスタンプを追加
