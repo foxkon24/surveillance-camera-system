@@ -50,7 +50,12 @@
 
                     function startPlaying() {
                         if (Hls.isSupported()) {
-                            var hls = new Hls();
+                            var hls = new Hls({
+                                lowLatencyMode: true,
+                                backBufferLength: 0,
+                                maxBufferLength: 1,
+                                maxMaxBufferLength: 2
+                            });
                             hls.loadSource(filePath);
                             hls.attachMedia(video);
                             hls.on(Hls.Events.MANIFEST_PARSED, function() {

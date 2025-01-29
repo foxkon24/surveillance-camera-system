@@ -16,7 +16,7 @@
             <div class="camera">
                 <h4>{{ camera.name }}</h4>
                 <div class="video-container">
-                    <video id="video{{ camera.id }}" autoplay playsinline></video>
+                    <video id="video{{ camera.id }}" autoplay playsinline muted></video>
                 </div>
             </div>
         </div>
@@ -78,6 +78,7 @@
                         video.play().catch(function(error) {
                             console.log("Play failed:", error);
                             // 自動再生がブロックされた場合の処理
+                            video.muted = true;
                             video.play();
                         });
                     });
@@ -86,6 +87,7 @@
                     video.addEventListener('loadedmetadata', function() {
                         video.play().catch(function(error) {
                             console.log("Play failed:", error);
+                            video.muted = true;
                             video.play();
                         });
                     });
@@ -95,11 +97,10 @@
             function startPlaying() {
                 if (Hls.isSupported()) {
                     var hls = new Hls({
-                        debug: true,
-                        manifestLoadingTimeOut: 20000,    // マニフェストロードのタイムアウトを20秒に設定
-                        manifestLoadingMaxRetry: 3,       // マニフェストロードの最大リトライ回数
-                        levelLoadingTimeOut: 20000,       // レベルロードのタイムアウトを20秒に設定
-                        levelLoadingMaxRetry: 3           // レベルロードの最大リトライ回数
+                        lowLatencyMode: true,
+                        backBufferLength: 0,
+                        maxBufferLength: 1,
+                        maxMaxBufferLength: 2
                     });
 
                     hls.loadSource(filePath);
