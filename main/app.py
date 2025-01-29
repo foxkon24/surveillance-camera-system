@@ -57,6 +57,7 @@ def read_config_backup():
             for line in file:
                 parts = line.strip().split(',')
                 camera_names[parts[0]] = parts[1]  # カメラIDと名前をマッピング
+
     except Exception as e:
         print(f"設定ファイル読み込みエラー: {e}")
         return {}
@@ -125,6 +126,7 @@ def list_recordings():
                     recordings[camera_id] = mp4_files
 
         return render_template('recordings.html', recordings=recordings, camera_names=camera_names)  # カメラ名も渡す
+
     except Exception as e:
         print(f"Error listing recordings: {e}")
         return f"Error: {str(e)}", 500
@@ -144,6 +146,7 @@ def serve_tmp_files(camera_id, filename):
             os.path.basename(file_path),
             as_attachment=False,
             mimetype='application/vnd.apple.mpegurl' if filename.endswith('.m3u8') else None)
+
     except Exception as e:
         logging.error(f"Error serving file {filename} for camera {camera_id}: {e}")
         return str(e), 500
@@ -170,6 +173,7 @@ def get_record_file_path(camera_id):
     filename = f"{camera_id}_{timestamp}.mp4"
     full_path = os.path.join(RECORD_PATH, str(camera_id), filename)
     logging.info(f"Generated file path: {full_path}")
+
     return full_path
 
 def get_free_space(path):
@@ -184,11 +188,15 @@ def get_free_space(path):
                 free_bytes = psutil.disk_usage(drive).free
             else:
                 free_bytes = psutil.disk_usage(path).free
+
             logging.info(f"Free space in {path}: {free_bytes / (1024*1024*1024):.2f} GB")
+
             return free_bytes
         else:
             logging.warning(f"Path does not exist: {path}")
+
             return 0
+
     except Exception as e:
         logging.error(f"Error getting free space for {path}: {e}")
         return 0
@@ -260,6 +268,31 @@ def finalize_recording(file_path):
     except Exception as e:
         logging.error(f"Error finalizing recording: {e}")
 
+def check_audio_stream(rtsp_url):
+    try:
+        # FFprobeを使用してストリーム情報を取得
+        ffprobe_command = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_streams',
+            '-i', rtsp_url
+        ]
+
+        result = subprocess.run(ffprobe_command, capture_output=True, text=True)
+        stream_info = json.loads(result.stdout)
+
+        # 音声ストリームの確認
+        has_audio = any(stream['codec_type'] == 'audio' for stream in stream_info['streams'])
+        if not has_audio:
+            logging.warning(f"No audio stream detected in RTSP URL: {rtsp_url}")
+
+        return has_audio
+
+    except Exception as e:
+        logging.error(f"Error checking audio stream: {e}")
+        return False
+
 def check_recording_duration(camera_id):
     """録画時間をチェックし、必要に応じて録画を再開する"""
     while True:
@@ -299,6 +332,10 @@ def start_new_recording(camera_id, rtsp_url):
     try:
         logging.info(f"Starting new recording for camera {camera_id} with URL {rtsp_url}")
 
+        # 音声ストリームの確認を追加
+        if not check_audio_stream(rtsp_url):
+            logging.warning(f"Camera {camera_id} may not have audio capability or audio stream is not available")
+
         if camera_id in recording_processes:
             logging.info(f"Stopping existing recording for camera {camera_id}")
             stop_recording(camera_id)
@@ -324,11 +361,16 @@ def start_new_recording(camera_id, rtsp_url):
             '-reconnect_at_eof', '1',
             '-reconnect_streamed', '1',
             '-reconnect_delay_max', '2',  # 最大再接続遅延を2秒に設定
+            '-thread_queue_size', '1024',     # 入力バッファサイズを増やす
+            '-analyzeduration', '2147483647', # 入力ストリームの分析時間を延長
+            '-probesize', '2147483647',       # プローブサイズを増やす
             '-c:v', 'copy',  # ビデオコーデックをそのままコピー
             '-c:a', 'aac',   # 音声コーデックをAACに設定
             '-b:a', '128k',  # 音声ビットレート
             '-ar', '44100',  # サンプリングレート
             '-ac', '2',  # ステレオ音声
+            '-async', '1',                    # 音声の同期モード
+            '-max_delay', '500000',           # 最大遅延時間（マイクロ秒）
             '-movflags', '+faststart',  # ファストスタートフラグを設定
             '-y',  # 既存のファイルを上書き
             file_path
@@ -367,6 +409,7 @@ def start_new_recording(camera_id, rtsp_url):
                         # エラーメッセージを検出した場合の処理
                         if "Error opening input" in decoded_line:
                             logging.error(f"RTSP connection error detected: {decoded_line}")
+
                 except Exception as e:
                     logging.error(f"Error in FFmpeg output monitoring: {e}")
                     break
