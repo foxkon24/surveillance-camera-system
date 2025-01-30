@@ -7,7 +7,7 @@
     <script src="/static/js/hls/hls.js"></script>
     <title>監視カメラシステム</title>
     <script>
-        // 10分間隔でページを自動更新する関数
+        // 5分間隔でページを自動更新する関数
         function setupAutoRefresh() {
             setInterval(function() {
                 const video = document.querySelector('video');
@@ -16,7 +16,7 @@
                 if (!video || video.readyState === 0 || video.error) {
                     location.reload();
                 }
-            }, 600000); // 10分 = 600000ミリ秒
+            }, 500000); // 5分 = 500000ミリ秒
         }
 
         // ページ読み込み完了時に自動更新を設定
