@@ -529,7 +529,13 @@ def get_or_start_streaming(camera):
 
             ffmpeg_command = [
                 'ffmpeg',
+                '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
                 '-i', camera['rtsp_url'],
+                '-reset_timestamps', '1',  # タイムスタンプをリセット
+                '-reconnect', '1',  # 接続が切れた場合に再接続を試みる
+                '-reconnect_at_eof', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '2',  # 最大再接続遅延を2秒に設定
                 '-c:v', 'copy',
                 '-c:a', 'aac',
                 '-b:a', '128k',          # 音声ビットレート
@@ -537,7 +543,7 @@ def get_or_start_streaming(camera):
                 '-ac', '2',              # ステレオ音声
                 '-hls_time', '1',  # セグメント長を短くして同期精度を向上
                 '-hls_list_size', '3',
-                '-hls_flags', 'delete_segments+program_date_time',  # タイムスタンプを追加
+                '-hls_flags', 'delete_segments+append_list+program_date_time',  # タイムスタンプを追加
                 '-hls_segment_type', 'mpegts',  # MPEGTSセグメントを使用
                 '-hls_allow_cache', '0',
                 hls_path
@@ -551,6 +557,14 @@ def get_or_start_streaming(camera):
                     creationflags=subprocess.CREATE_NO_WINDOW
                 )
                 streaming_processes[camera['id']] = process
+
+            # 監視スレッドを開始
+            monitor_thread = threading.Thread(
+                target=monitor_streaming_process,
+                args=(camera['id'], process),
+                daemon=True
+            )
+            monitor_thread.start()
 
             logging.info(f"Started streaming for camera {camera['id']}")
             return True
@@ -652,12 +666,99 @@ def monitor_recording_processes():
 
         time.sleep(30)  # 30秒ごとにチェック
 
+def monitor_streaming_process(camera_id, process):
+    while True:
+        try:
+            if process.poll() is not None:  # プロセスが終了している場合
+                logging.warning(f"Streaming process for camera {camera_id} has died. Restarting...")
+                # ストリーミングプロセスを削除
+                if camera_id in streaming_processes:
+                    del streaming_processes[camera_id]
+
+                # カメラ設定を読み込んでストリーミングを再開
+                cameras = read_config()
+                target_camera = next((cam for cam in cameras if cam['id'] == camera_id), None)
+                if target_camera:
+                    get_or_start_streaming(target_camera)
+                break
+
+        except Exception as e:
+            logging.error(f"Error monitoring streaming process for camera {camera_id}: {e}")
+            break
+
+        time.sleep(5)  # 5秒ごとにチェック
+
+def cleanup_old_segments(camera_id):
+    """
+    指定されたカメラのHLSセグメントファイルをクリーンアップする関数
+    
+    Parameters:
+        camera_id (str): カメラID
+    """
+    try:
+        camera_tmp_dir = os.path.join(TMP_PATH, camera_id)
+        if not os.path.exists(camera_tmp_dir):
+            logging.warning(f"Directory not found for camera {camera_id}: {camera_tmp_dir}")
+            return
+
+        current_time = time.time()
+        m3u8_file = os.path.join(camera_tmp_dir, f"{camera_id}.m3u8")
+        active_segments = set()
+
+        # .m3u8ファイルから現在使用中のセグメントを取得
+        if os.path.exists(m3u8_file):
+            try:
+                with open(m3u8_file, 'r') as f:
+                    for line in f:
+                        if line.strip().endswith('.ts'):
+                            active_segments.add(line.strip())
+            except Exception as e:
+                logging.error(f"Error reading m3u8 file for camera {camera_id}: {e}")
+
+        # ディレクトリ内のtsファイルをチェック
+        for file in os.listdir(camera_tmp_dir):
+            if file.endswith('.ts'):
+                file_path = os.path.join(camera_tmp_dir, file)
+                try:
+                    # ファイルが以下の条件を満たす場合に削除:
+                    # 1. プレイリストに含まれていない
+                    # 2. 作成から30秒以上経過している
+                    if (file not in active_segments and 
+                        current_time - os.path.getctime(file_path) > 30):
+                        os.remove(file_path)
+                        logging.info(f"Removed old segment file: {file}")
+                except Exception as e:
+                    logging.error(f"Error removing file {file}: {e}")
+                    continue
+
+    except Exception as e:
+        logging.error(f"Error in cleanup_old_segments for camera {camera_id}: {e}")
+
+def cleanup_scheduler():
+    """
+    すべてのカメラに対して定期的にクリーンアップを実行するスケジューラー
+    """
+    while True:
+        try:
+            cameras = read_config()
+            for camera in cameras:
+                cleanup_old_segments(camera['id'])
+        except Exception as e:
+            logging.error(f"Error in cleanup_scheduler: {e}")
+
+        time.sleep(15)  # 15秒ごとに実行
+
 if __name__ == '__main__':
     # アプリケーション起動時の処理
     if not monitor_thread or not monitor_thread.is_alive():
         monitor_thread = threading.Thread(target=monitor_recording_processes, daemon=True)
         monitor_thread.start()
         logging.info("Started recording process monitor thread")
+
+    # クリーンアップスレッドの起動
+    cleanup_thread = threading.Thread(target=cleanup_scheduler, daemon=True)
+    cleanup_thread.start()
+    logging.info("Started segment cleanup scheduler thread")
 
     app.run(host='0.0.0.0', port=5000, debug=False)
 
