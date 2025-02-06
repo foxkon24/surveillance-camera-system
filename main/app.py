@@ -548,7 +548,6 @@ def get_or_start_streaming(camera):
 
             ffmpeg_command = [
                 'ffmpeg',
-                '-rtsp_transport', 'tcp',
                 '-buffer_size', '10240k',    # バッファサイズを増加
                 '-use_wallclock_as_timestamps', '1',
                 '-i', camera['rtsp_url'],
