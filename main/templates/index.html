@@ -48,7 +48,10 @@
                 {% for camera in cameras %}
                     <div class="camera">
                         <h4>{{ camera.name }}</h4>
-                        <video id="video{{ camera.id }}" autoplay playsinline muted style="width: 320px; height: 240px;"></video>
+                        <div class="video-wrapper">
+                            <video id="video{{ camera.id }}" autoplay playsinline muted style="width: 320px; height: 240px;"></video>
+                            <div class="stream-status" id="status{{ camera.id }}"></div>
+                        </div>
                     </div>
                 {% endfor %}
             </div>
@@ -56,67 +59,142 @@
         <footer>&nbsp;&nbsp;Copyright&copy;&nbsp;&nbsp;2024&nbsp;&nbsp;株式会社&nbsp;共立電機製作所&nbsp;&nbsp;All&nbsp;rights&nbsp;reserved.</footer>
     </div>
     <script>
+        const players = {};
+        const retryAttempts = {};
+        const MAX_RETRY_ATTEMPTS = 5;
+        const RETRY_DELAY = 3000;
+
+        function updateStreamStatus(cameraId, status) {
+            const statusElement = document.getElementById('status' + cameraId);
+            if (statusElement) {
+                statusElement.textContent = status;
+            }
+        }
+
+        function initializePlayer(cameraId) {
+            const video = document.getElementById('video' + cameraId);
+            const filePath = '/system/cam/tmp/' + cameraId + '/' + cameraId + '.m3u8';
+
+            if (players[cameraId]) {
+                players[cameraId].destroy();
+            }
+
+            retryAttempts[cameraId] = 0;
+
+            if (Hls.isSupported()) {
+                const hls = new Hls({
+                    debug: false,
+                    enableWorker: true,
+                    lowLatencyMode: true,
+                    backBufferLength: 30,
+                    maxBufferLength: 10,
+                    maxMaxBufferLength: 20,
+                    manifestLoadingTimeOut: 10000,
+                    manifestLoadingMaxRetry: 3,
+                    levelLoadingTimeOut: 10000,
+                    levelLoadingMaxRetry: 3,
+                    fragLoadingTimeOut: 10000,
+                    fragLoadingMaxRetry: 3
+                });
+
+                players[cameraId] = hls;
+                updateStreamStatus(cameraId, '接続中...');
+
+                hls.loadSource(filePath);
+                hls.attachMedia(video);
+
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    video.play().catch(function(error) {
+                        console.log(`Camera ${cameraId} autoplay failed:`, error);
+                        video.muted = true;
+                        video.play();
+                    });
+                    updateStreamStatus(cameraId, '接続済');
+                });
+
+                hls.on(Hls.Events.ERROR, function(event, data) {
+                    console.log(`Camera ${cameraId} HLS error:`, data);
+
+                    if (data.fatal) {
+                        updateStreamStatus(cameraId, 'エラー発生');
+
+                        switch(data.type) {
+                            case Hls.ErrorTypes.NETWORK_ERROR:
+                                console.log(`Camera ${cameraId} network error, attempting recovery...`);
+                                if (retryAttempts[cameraId] < MAX_RETRY_ATTEMPTS) {
+                                    retryAttempts[cameraId]++;
+                                    updateStreamStatus(cameraId, '再接続中...');
+                                    setTimeout(() => {
+                                        hls.startLoad();
+                                    }, RETRY_DELAY);
+                                }
+                                break;
+                            case Hls.ErrorTypes.MEDIA_ERROR:
+                                console.log(`Camera ${cameraId} media error, attempting recovery...`);
+                                hls.recoverMediaError();
+                                break;
+                            default:
+                                if (retryAttempts[cameraId] < MAX_RETRY_ATTEMPTS) {
+                                    retryAttempts[cameraId]++;
+                                    setTimeout(() => initializePlayer(cameraId), RETRY_DELAY);
+                                }
+                                break;
+                        }
+                    }
+                });
+
+                // 定期的な健全性チェック
+                setInterval(() => {
+                    if (video.readyState === 0) {
+                        console.log(`Camera ${cameraId} stream stalled, attempting recovery...`);
+                        updateStreamStatus(cameraId, '再接続中...');
+                        hls.startLoad();
+                    }
+                }, 10000);
+
+            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                video.src = filePath;
+                video.addEventListener('loadedmetadata', function() {
+                    video.play().catch(function(error) {
+                        console.log(`Camera ${cameraId} autoplay failed:`, error);
+                        video.muted = true;
+                        video.play();
+                    });
+                });
+            }
+        }
+
         window.onload = function() {
             {% for camera in cameras %}
-                (function(cameraId) {
-                    function checkFileExists(url, callback) {
-                        fetch(url, { method: 'HEAD' })
-                            .then(res => {
-                                if (res.ok) {
-                                    callback(true);
-                                } else {
-                                    callback(false);
-                                }
-                            })
-                            .catch(() => callback(false));
-                    }
-
-                    const filePath = '/system/cam/tmp/' + cameraId + '/' + cameraId + '.m3u8';
-                    const video = document.getElementById('video' + cameraId);
-
-                    function startPlaying() {
-                        if (Hls.isSupported()) {
-                            var hls = new Hls({
-                                lowLatencyMode: true,
-                                backBufferLength: 0,
-                                maxBufferLength: 1,
-                                maxMaxBufferLength: 2
-                            });
-                            hls.loadSource(filePath);
-                            hls.attachMedia(video);
-                            hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                                video.play();
-                            });
-                        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-                            video.src = filePath;
-                            video.addEventListener('loadedmetadata', function() {
-                                video.play();
-                            });
-                        } else {
-                            console.error('This device does not support HLS streaming.');
-                        }
-                    }
-
-                    function attemptToStartPlaying(retries) {
-                        if (retries === 0) {
-                            console.error('Failed to load HLS stream after multiple attempts');
-                            return;
-                        }
-                        checkFileExists(filePath, function(exists) {
-                            if (exists) {
-                                startPlaying();
-                            } else {
-                                setTimeout(function() {
-                                    attemptToStartPlaying(retries - 1);
-                                }, 1000);
-                            }
-                        });
-                    }
-
-                    attemptToStartPlaying(10);
-                })('{{ camera.id }}');
+                initializePlayer('{{ camera.id }}');
             {% endfor %}
         };
+
+        // 5分間隔でページを自動更新
+        setInterval(function() {
+            const videos = document.getElementsByTagName('video');
+            let activeStreams = false;
+
+            for (let video of videos) {
+                if (!video.paused && video.readyState > 2) {
+                    activeStreams = true;
+                    break;
+                }
+            }
+
+            if (!activeStreams) {
+                location.reload();
+            }
+        }, 300000);
+
+        // クリーンアップ
+        window.addEventListener('beforeunload', function() {
+            for (const cameraId in players) {
+                if (players[cameraId]) {
+                    players[cameraId].destroy();
+                }
+            }
+        });
     </script>
 </body>
 </html>
