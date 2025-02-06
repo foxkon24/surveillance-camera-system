@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import signal
 import psutil
 import logging
+import json
 
 app = Flask(__name__)
 
@@ -33,12 +34,13 @@ monitor_thread = None
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    filename='recorder.log'
+    filename='streaming.log'
 )
 
 def read_config():
     with open(CONFIG_PATH, 'r', encoding='utf-8') as file:
         cameras = []
+
         for line in file:
             parts = line.strip().split(',')
             cameras.append({
@@ -61,25 +63,30 @@ def read_config_backup():
     except Exception as e:
         print(f"設定ファイル読み込みエラー: {e}")
         return {}
+
     return camera_names
 
 def get_recordings():
     """バックアップフォルダから録画ファイルを取得"""
     recordings = {}
+
     try:
         # バックアップフォルダ内の全カメラフォルダをチェック
         camera_dirs = os.listdir(BACKUP_PATH)
         for camera_id in camera_dirs:
             camera_path = os.path.join(BACKUP_PATH, camera_id)
+
             if os.path.isdir(camera_path):
                 # MP4ファイルのリストを取得
                 mp4_files = []
+
                 for file in os.listdir(camera_path):
                     if file.endswith('.mp4'):
                         # ファイル情報を取得
                         file_path = os.path.join(camera_path, file)
                         file_size = os.path.getsize(file_path)
                         file_mtime = os.path.getmtime(file_path)
+
                         # ファイル名から日時を解析
                         try:
                             # ファイル名のフォーマット: <カメラID>_YYYYMMDDHHmmSS.mp4
@@ -118,8 +125,10 @@ def list_recordings():
 
     try:
         camera_dirs = os.listdir(RECORD_PATH)
+
         for camera_id in camera_dirs:
             camera_path = os.path.join(RECORD_PATH, camera_id)
+
             if os.path.isdir(camera_path):
                 mp4_files = [f for f in os.listdir(camera_path) if f.endswith('.mp4')]
                 if mp4_files:
@@ -145,7 +154,7 @@ def serve_tmp_files(camera_id, filename):
             directory,
             os.path.basename(file_path),
             as_attachment=False,
-            mimetype='application/vnd.apple.mpegurl' if filename.endswith('.m3u8') else None)
+            mimetype = 'application/vnd.apple.mpegurl' if filename.endswith('.m3u8') else None)
 
     except Exception as e:
         logging.error(f"Error serving file {filename} for camera {camera_id}: {e}")
@@ -162,6 +171,7 @@ def serve_backup_file(camera_id, filename):
 def ensure_directory_exists(path):
     if not os.path.exists(path):
         os.makedirs(path)
+
         try:
             os.chmod(path, 0o777)  # ディレクトリに対して全権限を付与
         except OSError as e:
@@ -234,6 +244,7 @@ def check_recording_process(camera_id):
         if process.poll() is not None:  # プロセスが終了している場合
             logging.warning(f"Recording process for camera {camera_id} has died. Restarting...")
             del streaming_processes[camera_id]
+
             # カメラの設定を読み込み
             cameras = read_config()
             for camera in cameras:
@@ -248,6 +259,7 @@ def finalize_recording(file_path):
         if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
             # FFmpegを使用してファイルを再エンコード
             temp_path = file_path + '.temp.mp4'
+
             ffmpeg_command = [
                 'ffmpeg',
                 '-i', file_path,
@@ -403,6 +415,7 @@ def start_new_recording(camera_id, rtsp_url):
                     line = process.stderr.readline()
                     if not line:
                         break
+
                     decoded_line = line.decode('utf-8', errors='replace').strip()
                     if decoded_line:
                         logging.info(f"FFmpeg output: {decoded_line}")
@@ -426,6 +439,7 @@ def start_new_recording(camera_id, rtsp_url):
 
         # プロセスの状態を確認
         time.sleep(2)  # プロセスの起動を待つ
+
         if process.poll() is not None:
             return_code = process.poll()
             error_output = process.stderr.read().decode('utf-8', errors='replace')
@@ -442,6 +456,7 @@ def stop_recording(camera_id):
     logging.info(f"Attempting to stop recording for camera {camera_id}")
 
     recording_info = recording_processes.pop(camera_id, None)
+
     if camera_id in recording_start_times:
         del recording_start_times[camera_id]
 
@@ -474,9 +489,12 @@ def stop_recording(camera_id):
                 # 最後の手段としてpsutilを使用
                 try:
                     parent = psutil.Process(process.pid)
+
                     for child in parent.children(recursive=True):
                         child.kill()
+
                     parent.kill()
+
                     logging.info("Killed process using psutil")
                 except Exception as sub_e:
                     logging.error(f"Error killing process with psutil: {sub_e}")
@@ -500,6 +518,7 @@ def stop_recording(camera_id):
             if os.path.exists(file_path):
                 file_size = os.path.getsize(file_path)
                 logging.info(f"Recording file exists. Size: {file_size} bytes")
+
                 if file_size > 0:
                     finalize_recording(file_path)
                 else:
@@ -529,23 +548,27 @@ def get_or_start_streaming(camera):
 
             ffmpeg_command = [
                 'ffmpeg',
-                '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
+                '-rtsp_transport', 'tcp',
+                '-buffer_size', '10240k',    # バッファサイズを増加
+                '-use_wallclock_as_timestamps', '1',
                 '-i', camera['rtsp_url'],
-                '-reset_timestamps', '1',  # タイムスタンプをリセット
-                '-reconnect', '1',  # 接続が切れた場合に再接続を試みる
+                '-reset_timestamps', '1',
+                '-reconnect', '1',
                 '-reconnect_at_eof', '1',
                 '-reconnect_streamed', '1',
-                '-reconnect_delay_max', '2',  # 最大再接続遅延を2秒に設定
+                '-reconnect_delay_max', '2',
+                '-thread_queue_size', '8192',  # スレッドキューサイズを増加
                 '-c:v', 'copy',
                 '-c:a', 'aac',
-                '-b:a', '128k',          # 音声ビットレート
-                '-ar', '44100',          # サンプリングレート
-                '-ac', '2',              # ステレオ音声
-                '-hls_time', '1',  # セグメント長を短くして同期精度を向上
-                '-hls_list_size', '3',
-                '-hls_flags', 'delete_segments+append_list+program_date_time',  # タイムスタンプを追加
-                '-hls_segment_type', 'mpegts',  # MPEGTSセグメントを使用
-                '-hls_allow_cache', '0',
+                '-b:a', '128k',
+                '-ar', '44100',
+                '-ac', '2',
+                '-hls_time', '2',           # セグメント長を2秒に増加
+                '-hls_list_size', '5',      # リストサイズを増加
+                '-hls_flags', 'delete_segments+append_list+program_date_time+independent_segments',
+                '-hls_segment_type', 'mpegts',
+                '-hls_allow_cache', '1',    # キャッシュを許可
+                '-hls_segment_filename', os.path.join(camera_tmp_dir, f"{camera['id']}_%03d.ts").replace('/', '\\'),
                 hls_path
             ]
 
@@ -554,7 +577,7 @@ def get_or_start_streaming(camera):
                     ffmpeg_command,
                     stdout=log_file,
                     stderr=log_file,
-                    creationflags=subprocess.CREATE_NO_WINDOW
+                    creationflags=subprocess.CREATE_NO_WINDOW | subprocess.HIGH_PRIORITY_CLASS
                 )
                 streaming_processes[camera['id']] = process
 
@@ -568,6 +591,7 @@ def get_or_start_streaming(camera):
 
             logging.info(f"Started streaming for camera {camera['id']}")
             return True
+
         except Exception as e:
             logging.error(f"Error starting streaming for camera {camera['id']}: {e}")
             return False
@@ -579,6 +603,7 @@ def start_recording_route():
     camera_id = data['camera_id']
     rtsp_url = data['rtsp_url']
     start_recording(camera_id, rtsp_url)
+
     return jsonify({"status": "recording started"})
 
 @app.route('/stop_recording', methods=['POST'])
@@ -586,6 +611,7 @@ def stop_recording_route():
     data = request.json
     camera_id = data['camera_id']
     stop_recording(camera_id)
+
     return jsonify({"status": "recording stopped"})
 
 @app.route('/start_all_recordings', methods=['POST'])
@@ -593,6 +619,7 @@ def start_all_recordings_route():
     cameras = read_config()
     for camera in cameras:
         start_recording(camera['id'], camera['rtsp_url'])
+
     return jsonify({"status": "all recordings started"})
 
 @app.route('/stop_all_recordings', methods=['POST'])
@@ -600,6 +627,7 @@ def stop_all_recordings_route():
     cameras = read_config()
     for camera in cameras:
         stop_recording(camera['id'])
+
     return jsonify({"status": "all recordings stopped"})
 
 @app.route('/system/cam/')
@@ -607,7 +635,9 @@ def index():
     cameras = read_config()
     for camera in cameras:
         get_or_start_streaming(camera)
+
     time.sleep(5)
+
     return render_template('index.html', cameras=cameras)
 
 @app.route('/system/cam/admin/')
@@ -615,7 +645,9 @@ def index_admin():
     cameras = read_config()
     for camera in cameras:
         get_or_start_streaming(camera)
+
     time.sleep(5)
+
     return render_template('admin.html', cameras=cameras)
 
 @app.route('/system/cam/single')
@@ -623,12 +655,17 @@ def index_single():
     camera_id = request.args.get('id')
     if not camera_id:
         return 'Camera ID not specified', 400
+
     cameras = read_config()
+
     target_camera = next((camera for camera in cameras if camera['id'] == camera_id), None)
     if target_camera is None:
         return 'Camera not found', 404
+
     get_or_start_streaming(target_camera)
+
     time.sleep(5)
+
     return render_template('single.html', camera=target_camera)
 
 @app.route('/system/cam/backup/')
@@ -636,6 +673,7 @@ def backup_recordings():
     """バックアップ録画一覧を表示"""
     recordings = get_recordings()
     camera_names = read_config_backup()
+
     return render_template('backup_recordings.html', recordings=recordings, camera_names=camera_names)
 
 def monitor_recording_processes():
@@ -667,10 +705,29 @@ def monitor_recording_processes():
         time.sleep(30)  # 30秒ごとにチェック
 
 def monitor_streaming_process(camera_id, process):
+    """改善したストリーミングプロセス監視関数"""
+    consecutive_failures = 0
+    max_failures = 3
+    retry_delay = 10  # 初期リトライ遅延（秒）
+    max_retry_delay = 60  # 最大リトライ遅延（秒）
+
     while True:
         try:
             if process.poll() is not None:  # プロセスが終了している場合
-                logging.warning(f"Streaming process for camera {camera_id} has died. Restarting...")
+                consecutive_failures += 1
+                current_delay = min(retry_delay * consecutive_failures, max_retry_delay)
+
+                logging.warning(f"Streaming process for camera {camera_id} has died. "
+                                f"Attempt {consecutive_failures}/{max_failures}. "
+                                f"Waiting {current_delay} seconds before retry.")
+
+                time.sleep(current_delay)
+
+                if consecutive_failures >= max_failures:
+                    logging.error(f"Too many consecutive failures for camera {camera_id}. Performing full restart.")
+                    cleanup_camera_resources(camera_id)
+                    consecutive_failures = 0
+
                 # ストリーミングプロセスを削除
                 if camera_id in streaming_processes:
                     del streaming_processes[camera_id]
@@ -679,14 +736,38 @@ def monitor_streaming_process(camera_id, process):
                 cameras = read_config()
                 target_camera = next((cam for cam in cameras if cam['id'] == camera_id), None)
                 if target_camera:
-                    get_or_start_streaming(target_camera)
+                    success = get_or_start_streaming(target_camera)
+                    if success:
+                        consecutive_failures = 0
+                        logging.info(f"Successfully restarted streaming for camera {camera_id}")
+                    else:
+                        logging.error(f"Failed to restart streaming for camera {camera_id}")
                 break
+            else:
+                # プロセスが正常な場合、失敗カウントをリセット
+                consecutive_failures = 0
 
         except Exception as e:
             logging.error(f"Error monitoring streaming process for camera {camera_id}: {e}")
-            break
+            time.sleep(5)
+            continue
 
         time.sleep(5)  # 5秒ごとにチェック
+
+def cleanup_camera_resources(camera_id):
+    """カメラリソースのクリーンアップ処理"""
+    try:
+        camera_tmp_dir = os.path.join(TMP_PATH, camera_id)
+        if os.path.exists(camera_tmp_dir):
+            for file in os.listdir(camera_tmp_dir):
+                try:
+                    file_path = os.path.join(camera_tmp_dir, file)
+                    if os.path.isfile(file_path):
+                        os.remove(file_path)
+                except Exception as e:
+                    logging.error(f"Error removing file {file}: {e}")
+    except Exception as e:
+        logging.error(f"Error in cleanup_camera_resources for camera {camera_id}: {e}")
 
 def cleanup_old_segments(camera_id):
     """
@@ -698,7 +779,6 @@ def cleanup_old_segments(camera_id):
     try:
         camera_tmp_dir = os.path.join(TMP_PATH, camera_id)
         if not os.path.exists(camera_tmp_dir):
-            logging.warning(f"Directory not found for camera {camera_id}: {camera_tmp_dir}")
             return
 
         current_time = time.time()
@@ -714,22 +794,22 @@ def cleanup_old_segments(camera_id):
                             active_segments.add(line.strip())
             except Exception as e:
                 logging.error(f"Error reading m3u8 file for camera {camera_id}: {e}")
+                return
 
         # ディレクトリ内のtsファイルをチェック
         for file in os.listdir(camera_tmp_dir):
             if file.endswith('.ts'):
                 file_path = os.path.join(camera_tmp_dir, file)
+
                 try:
                     # ファイルが以下の条件を満たす場合に削除:
                     # 1. プレイリストに含まれていない
-                    # 2. 作成から30秒以上経過している
-                    if (file not in active_segments and 
-                        current_time - os.path.getctime(file_path) > 30):
+                    # 2. 作成から60秒以上経過している
+                    if (file not in active_segments and  current_time - os.path.getctime(file_path) > 60):
                         os.remove(file_path)
                         logging.info(f"Removed old segment file: {file}")
                 except Exception as e:
                     logging.error(f"Error removing file {file}: {e}")
-                    continue
 
     except Exception as e:
         logging.error(f"Error in cleanup_old_segments for camera {camera_id}: {e}")
