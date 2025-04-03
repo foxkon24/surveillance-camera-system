@@ -16,6 +16,14 @@ import camera_utils
 
 # グローバル変数としてストリーミングプロセスを管理
 streaming_processes = {}
+# HLSファイルの最終更新時間を追跡
+hls_last_update = {}
+# m3u8ファイルの前回のサイズを追跡
+m3u8_last_size = {}
+# 健全性チェックの間隔（秒）
+HEALTH_CHECK_INTERVAL = 15
+# ファイル更新タイムアウト（秒）- この時間以上更新がない場合は問題と判断
+HLS_UPDATE_TIMEOUT = 30
 
 def get_or_start_streaming(camera):
     """
@@ -55,6 +63,13 @@ def get_or_start_streaming(camera):
             # プロセス起動
             process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command, log_path=log_path)
             streaming_processes[camera['id']] = process
+            
+            # 初期化時点で更新情報を記録
+            hls_last_update[camera['id']] = time.time()
+            if os.path.exists(hls_path):
+                m3u8_last_size[camera['id']] = os.path.getsize(hls_path)
+            else:
+                m3u8_last_size[camera['id']] = 0
 
             # 監視スレッドを開始
             monitor_thread = threading.Thread(
@@ -64,6 +79,14 @@ def get_or_start_streaming(camera):
             )
             monitor_thread.start()
 
+            # ファイル更新監視スレッドを開始
+            hls_monitor_thread = threading.Thread(
+                target=monitor_hls_updates,
+                args=(camera['id'],),
+                daemon=True
+            )
+            hls_monitor_thread.start()
+
             logging.info(f"Started streaming for camera {camera['id']}")
             return True
 
@@ -72,6 +95,111 @@ def get_or_start_streaming(camera):
             return False
 
     return True
+
+def restart_streaming(camera_id):
+    """
+    特定カメラのストリーミングを再起動する
+
+    Args:
+        camera_id (str): 再起動するカメラID
+    
+    Returns:
+        bool: 操作が成功したかどうか
+    """
+    try:
+        logging.warning(f"Restarting streaming for camera {camera_id}")
+        
+        # 既存のffmpegプロセスを強制終了
+        ffmpeg_utils.kill_ffmpeg_processes(camera_id)
+        
+        # ストリーミングプロセスを削除
+        if camera_id in streaming_processes:
+            del streaming_processes[camera_id]
+        
+        # カメラ設定を読み込んでストリーミングを再開
+        camera = camera_utils.get_camera_by_id(camera_id)
+        if camera:
+            success = get_or_start_streaming(camera)
+            if success:
+                logging.info(f"Successfully restarted streaming for camera {camera_id}")
+                return True
+            else:
+                logging.error(f"Failed to restart streaming for camera {camera_id}")
+                return False
+        else:
+            logging.error(f"Camera config not found for camera {camera_id}")
+            return False
+    
+    except Exception as e:
+        logging.error(f"Error restarting streaming for camera {camera_id}: {e}")
+        return False
+
+def monitor_hls_updates(camera_id):
+    """
+    HLSファイルの更新状態を監視する関数
+
+    Args:
+        camera_id (str): 監視するカメラID
+    """
+    camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
+    hls_path = os.path.join(camera_tmp_dir, f"{camera_id}.m3u8").replace('/', '\\')
+    
+    failures = 0
+    max_failures = 2  # 連続でこの回数分問題が検出されたら再起動
+    
+    while True:
+        try:
+            if camera_id not in streaming_processes:
+                # ストリーミングが停止していたら監視も終了
+                logging.info(f"Streaming process for camera {camera_id} no longer exists. Stopping HLS monitor.")
+                break
+            
+            current_time = time.time()
+            file_updated = False
+            
+            # m3u8ファイルの存在と更新チェック
+            if os.path.exists(hls_path):
+                # ファイルサイズをチェック
+                current_size = os.path.getsize(hls_path)
+                last_size = m3u8_last_size.get(camera_id, 0)
+                
+                if current_size != last_size:
+                    # ファイルサイズが変わっていれば更新されている
+                    m3u8_last_size[camera_id] = current_size
+                    hls_last_update[camera_id] = current_time
+                    file_updated = True
+                    failures = 0  # 正常更新を検出したらカウンタをリセット
+            
+            # TSファイルの更新も確認
+            ts_files = [f for f in os.listdir(camera_tmp_dir) if f.endswith('.ts')]
+            if ts_files:
+                newest_ts = max(ts_files, key=lambda f: os.path.getmtime(os.path.join(camera_tmp_dir, f)))
+                newest_ts_path = os.path.join(camera_tmp_dir, newest_ts)
+                ts_mtime = os.path.getmtime(newest_ts_path)
+                
+                if ts_mtime > hls_last_update.get(camera_id, 0):
+                    hls_last_update[camera_id] = current_time
+                    file_updated = True
+                    failures = 0  # 正常更新を検出したらカウンタをリセット
+            
+            # ファイル更新が停止しているかチェック
+            last_update = hls_last_update.get(camera_id, 0)
+            if not file_updated and (current_time - last_update) > HLS_UPDATE_TIMEOUT:
+                logging.warning(f"HLS files for camera {camera_id} have not been updated for {current_time - last_update:.2f} seconds")
+                failures += 1
+                
+                if failures >= max_failures:
+                    logging.error(f"HLS update timeout detected for camera {camera_id}. Restarting streaming.")
+                    restart_streaming(camera_id)
+                    failures = 0
+                    
+                    # 監視を終了（新しいスレッドが開始されるため）
+                    break
+            
+        except Exception as e:
+            logging.error(f"Error monitoring HLS updates for camera {camera_id}: {e}")
+        
+        time.sleep(HEALTH_CHECK_INTERVAL)
 
 def monitor_streaming_process(camera_id, process):
     """
