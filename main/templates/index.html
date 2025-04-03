@@ -61,14 +61,29 @@
     <script>
         const players = {};
         const retryAttempts = {};
+        const streamTimestamps = {};  // ストリームデータの最終受信時間を追跡
         const MAX_RETRY_ATTEMPTS = 5;
         const RETRY_DELAY = 3000;
+        const STREAM_CHECK_INTERVAL = 10000;  // 10秒ごとにストリームをチェック
+        const STREAM_STALL_TIMEOUT = 20000;  // 20秒間データが来なければ停止とみなす
 
         function updateStreamStatus(cameraId, status) {
             const statusElement = document.getElementById('status' + cameraId);
             if (statusElement) {
                 statusElement.textContent = status;
             }
+        }
+
+        function reloadStream(cameraId) {
+            console.log(`Reloading stream for camera ${cameraId}`);
+            updateStreamStatus(cameraId, '再読み込み中...');
+            
+            if (players[cameraId]) {
+                players[cameraId].destroy();
+            }
+            
+            // 少し待ってから再初期化
+            setTimeout(() => initializePlayer(cameraId), 1000);
         }
 
         function initializePlayer(cameraId) {
@@ -80,6 +95,7 @@
             }
 
             retryAttempts[cameraId] = 0;
+            streamTimestamps[cameraId] = Date.now();  // 初期化時のタイムスタンプを記録
 
             if (Hls.isSupported()) {
                 const hls = new Hls({
@@ -112,6 +128,11 @@
                     updateStreamStatus(cameraId, '接続済');
                 });
 
+                // フラグメントロード成功時にタイムスタンプを更新
+                hls.on(Hls.Events.FRAG_LOADED, function() {
+                    streamTimestamps[cameraId] = Date.now();
+                });
+
                 hls.on(Hls.Events.ERROR, function(event, data) {
                     console.log(`Camera ${cameraId} HLS error:`, data);
 
@@ -127,6 +148,9 @@
                                     setTimeout(() => {
                                         hls.startLoad();
                                     }, RETRY_DELAY);
+                                } else {
+                                    // 最大再試行回数を超えたら再読み込み
+                                    reloadStream(cameraId);
                                 }
                                 break;
                             case Hls.ErrorTypes.MEDIA_ERROR:
@@ -137,20 +161,14 @@
                                 if (retryAttempts[cameraId] < MAX_RETRY_ATTEMPTS) {
                                     retryAttempts[cameraId]++;
                                     setTimeout(() => initializePlayer(cameraId), RETRY_DELAY);
+                                } else {
+                                    // 最大再試行回数を超えたら再読み込み
+                                    reloadStream(cameraId);
                                 }
                                 break;
                         }
                     }
                 });
-
-                // 定期的な健全性チェック
-                setInterval(() => {
-                    if (video.readyState === 0) {
-                        console.log(`Camera ${cameraId} stream stalled, attempting recovery...`);
-                        updateStreamStatus(cameraId, '再接続中...');
-                        hls.startLoad();
-                    }
-                }, 10000);
 
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 video.src = filePath;
@@ -164,28 +182,77 @@
             }
         }
 
+        // ストリーミングの健全性チェック
+        function setupHealthChecks() {
+            {% for camera in cameras %}
+            setInterval(() => {
+                const cameraId = '{{ camera.id }}';
+                const video = document.getElementById('video' + cameraId);
+                const currentTime = Date.now();
+                const lastUpdateTime = streamTimestamps[cameraId] || 0;
+                
+                // 再生状態チェック - readyState 0はストリームが読み込まれていない状態
+                if (video && video.readyState === 0) {
+                    console.log(`Camera ${cameraId} stream not loaded, attempting recovery...`);
+                    updateStreamStatus(cameraId, '再接続中...');
+                    reloadStream(cameraId);
+                    return;
+                }
+                
+                // データ受信チェック - 一定時間データが来ていなければ再接続
+                if (currentTime - lastUpdateTime > STREAM_STALL_TIMEOUT) {
+                    console.log(`Camera ${cameraId} stream stalled (no data for ${(currentTime - lastUpdateTime)/1000}s), reloading...`);
+                    updateStreamStatus(cameraId, 'データ停止 - 再読み込み中...');
+                    reloadStream(cameraId);
+                    return;
+                }
+                
+                // バッファリングチェック - ビデオが一時停止しているかチェック
+                if (video && !video.paused && video.readyState > 1 && video.played.length > 0) {
+                    // ビデオは再生中だが、バッファリングが発生している可能性がある
+                    if (video.buffered.length > 0) {
+                        const bufferedEnd = video.buffered.end(video.buffered.length - 1);
+                        const bufferedTime = bufferedEnd - video.currentTime;
+                        
+                        // バッファリング時間が極端に短い場合はストリームが詰まっている可能性
+                        if (bufferedTime < 0.5 && video.readyState < 4) {
+                            console.log(`Camera ${cameraId} insufficient buffer (${bufferedTime.toFixed(2)}s), may be stalling`);
+                            updateStreamStatus(cameraId, 'バッファリング中...');
+                        }
+                    }
+                }
+            }, STREAM_CHECK_INTERVAL);
+            {% endfor %}
+        }
+
         window.onload = function() {
             {% for camera in cameras %}
                 initializePlayer('{{ camera.id }}');
             {% endfor %}
+            
+            // 健全性チェックを設定
+            setupHealthChecks();
         };
 
-        // 5分間隔でページを自動更新
-        setInterval(function() {
-            const videos = document.getElementsByTagName('video');
-            let activeStreams = false;
-
-            for (let video of videos) {
-                if (!video.paused && video.readyState > 2) {
-                    activeStreams = true;
-                    break;
+        // バックグラウンド切り替え時の処理
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) {
+                // バックグラウンドに移行した場合、各ストリームを一時停止
+                for (const cameraId in players) {
+                    if (players[cameraId]) {
+                        players[cameraId].stopLoad();
+                    }
+                }
+            } else {
+                // フォアグラウンドに戻った場合、各ストリームを再開
+                for (const cameraId in players) {
+                    if (players[cameraId]) {
+                        players[cameraId].startLoad();
+                        streamTimestamps[cameraId] = Date.now(); // タイムスタンプを更新
+                    }
                 }
             }
-
-            if (!activeStreams) {
-                location.reload();
-            }
-        }, 300000);
+        });
 
         // クリーンアップ
         window.addEventListener('beforeunload', function() {
