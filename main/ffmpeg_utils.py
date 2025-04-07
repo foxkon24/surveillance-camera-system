@@ -82,20 +82,39 @@ def check_audio_stream(rtsp_url):
         ffprobe_command = [
             'ffprobe',
             '-v', 'quiet',
+            '-rtsp_transport', 'tcp', # TCPトランスポートを追加
             '-print_format', 'json',
             '-show_streams',
-            '-i', rtsp_url
+            '-i', rtsp_url,
+            '-timeout', '5000000' # 5秒タイムアウト（マイクロ秒単位）
         ]
 
-        result = subprocess.run(ffprobe_command, capture_output=True, text=True)
-        stream_info = json.loads(result.stdout)
+        result = subprocess.run(ffprobe_command, capture_output=True, text=True, timeout=10)
+        
+        # 出力が空でない場合のみJSONをパース
+        if result.stdout.strip():
+            stream_info = json.loads(result.stdout)
+            # 音声ストリームの確認
+            has_audio = any(stream['codec_type'] == 'audio' for stream in stream_info.get('streams', []))
+            if not has_audio:
+                logging.warning(f"No audio stream detected in RTSP URL: {rtsp_url}")
+            return has_audio
+        else:
+            logging.warning(f"No output from ffprobe for RTSP URL: {rtsp_url}")
+            return False
 
-        # 音声ストリームの確認
-        has_audio = any(stream['codec_type'] == 'audio' for stream in stream_info['streams'])
-        if not has_audio:
-            logging.warning(f"No audio stream detected in RTSP URL: {rtsp_url}")
-
-        return has_audio
+    except json.JSONDecodeError as e:
+        logging.error(f"Error parsing JSON from ffprobe: {e}")
+        # エラー内容をログに出力
+        if result and hasattr(result, 'stderr'):
+            logging.error(f"ffprobe stderr: {result.stderr}")
+        if result and hasattr(result, 'stdout'):
+            logging.error(f"ffprobe stdout: {result.stdout}")
+        return False
+        
+    except subprocess.TimeoutExpired:
+        logging.error(f"Timeout when checking audio stream for RTSP URL: {rtsp_url}")
+        return False
 
     except Exception as e:
         logging.error(f"Error checking audio stream: {e}")
@@ -176,28 +195,43 @@ def start_ffmpeg_process(command, log_path=None, high_priority=True):
         logging.error(f"Failed to start FFmpeg process: {e}")
         raise
 
-def monitor_ffmpeg_output(process):
+def monitor_ffmpeg_output(process, camera_id=None):
     """
     FFmpegプロセスの出力を監視する
 
     Args:
         process (subprocess.Popen): 監視するFFmpegプロセス
+        camera_id (str, optional): 関連するカメラID
     """
+    camera_str = f" for camera {camera_id}" if camera_id else ""
+    
     while True:
         try:
-            line = process.stderr.readline()
-            if not line:
+            if process.poll() is not None:
+                if process.returncode != 0:
+                    logging.error(f"FFmpeg process{camera_str} exited with code {process.returncode}")
+                else:
+                    logging.info(f"FFmpeg process{camera_str} completed successfully")
                 break
+                
+            # stderr から1行読み込む
+            if process.stderr:
+                line = process.stderr.readline()
+                if not line:
+                    break
 
-            decoded_line = line.decode('utf-8', errors='replace').strip()
-            if decoded_line:
-                logging.info(f"FFmpeg output: {decoded_line}")
-                # エラーメッセージを検出
-                if "Error" in decoded_line:
-                    logging.error(f"FFmpeg error detected: {decoded_line}")
+                decoded_line = line.decode('utf-8', errors='replace').strip()
+                if decoded_line:
+                    # エラーメッセージを検出して特別に処理
+                    if "Error" in decoded_line or "error" in decoded_line:
+                        logging.error(f"FFmpeg error detected{camera_str}: {decoded_line}")
+                    elif "Warning" in decoded_line or "warning" in decoded_line:
+                        logging.warning(f"FFmpeg warning{camera_str}: {decoded_line}")
+                    else:
+                        logging.info(f"FFmpeg output{camera_str}: {decoded_line}")
 
         except Exception as e:
-            logging.error(f"Error in FFmpeg output monitoring: {e}")
+            logging.error(f"Error in FFmpeg output monitoring{camera_str}: {e}")
             break
 
 def terminate_process(process, timeout=5):
@@ -283,6 +317,7 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, 
     return [
         'ffmpeg',
         '-buffer_size', '10240k',    # バッファサイズを増加
+        '-rtsp_transport', 'tcp',    # TCPトランスポートを使用（追加）
         '-use_wallclock_as_timestamps', '1',
         '-i', rtsp_url,
         '-reset_timestamps', '1',

@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta http-equiv="content-type" content="text/html; charset=UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1, minimum-scale=1, shrink-to-fit=no, user-scalable=no">
+    <link rel="stylesheet" href="/static/css/style_admin.css">
+    <title>監視カメラシステム（管理者）</title>
+</head>
+<body>
+    <div class="layout">
+        <header><h1>監視カメラシステム（管理者）</h1></header>
+        <nav>
+            <ul>
+                <li><a href="/system/cam/admin/">Top</a></li>
+                <li><a href="/system/cam/record/">録画データ</a></li>
+                <li><a href="/system/cam/backup/">バックアップ録画一覧</a></li>
+            </ul>
+        </nav>
+        <div class="controls">
+            <button onclick="stopAllRecordings()">全カメラ録画 停止</button>
+            <button onclick="startAllRecordings()">全カメラ録画 開始</button>
+            <button onclick="checkSystemStatus()">システム状態確認</button>
+        </div>
+        <div class="msg" id="message-area">
+            
+        </div>
+        <div class="container" id="status-container">
+            <div class="status-area">
+                <h3>システム状態</h3>
+                <div id="status-content"></div>
+            </div>
+        </div>
+        <footer>&nbsp;&nbsp;Copyright&copy;&nbsp;&nbsp;2024&nbsp;&nbsp;株式会社&nbsp;共立電機製作所&nbsp;&nbsp;All&nbsp;rights&nbsp;reserved.</footer>
+    </div>
+    <script>
+        function startAllRecordings() {
+            document.querySelector('#message-area').textContent = '全カメラの録画を開始しています...';
+            
+            fetch('/stop_all_recordings', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    console.log(data);
+                    fetch('/start_all_recordings', { method: 'POST' })
+                        .then(response => response.json())
+                        .then(data => {
+                            console.log(data);
+                            // メッセージを表示
+                            document.querySelector('#message-area').textContent = '全カメラの録画を開始しました...';
+                            // 状態を更新
+                            setTimeout(checkSystemStatus, 2000);
+                        })
+                        .catch(error => {
+                            document.querySelector('#message-area').textContent = 'エラー: 録画開始に失敗しました';
+                            console.error('Error:', error);
+                        });
+                })
+                .catch(error => {
+                    document.querySelector('#message-area').textContent = 'エラー: 録画停止に失敗しました';
+                    console.error('Error:', error);
+                });
+        }
+
+        function stopAllRecordings() {
+            document.querySelector('#message-area').textContent = '全カメラの録画を停止しています...';
+            
+            fetch('/stop_all_recordings', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    console.log(data);
+                    // メッセージを表示
+                    document.querySelector('#message-area').textContent = '全カメラの録画を停止しました...';
+                    // 状態を更新
+                    setTimeout(checkSystemStatus, 2000);
+                })
+                .catch(error => {
+                    document.querySelector('#message-area').textContent = 'エラー: 録画停止に失敗しました';
+                    console.error('Error:', error);
+                });
+        }
+        
+        function checkSystemStatus() {
+            fetch('/system/cam/status')
+                .then(response => response.json())
+                .then(data => {
+                    displaySystemStatus(data);
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    document.querySelector('#status-content').innerHTML = '<p class="error">システム状態の取得に失敗しました</p>';
+                });
+        }
+        
+        function displaySystemStatus(data) {
+            const statusContent = document.querySelector('#status-content');
+            let html = '';
+            
+            // ストリーミング状態
+            html += '<div class="status-section"><h4>ストリーミング状態</h4>';
+            if (Object.keys(data.streaming).length > 0) {
+                html += '<table><tr><th>カメラID</th><th>状態</th><th>メッセージ</th><th>タイムスタンプ</th></tr>';
+                
+                for (const [cameraId, info] of Object.entries(data.streaming)) {
+                    const statusClass = getStatusClass(info.status);
+                    const timestamp = new Date(info.timestamp * 1000).toLocaleString();
+                    
+                    html += `<tr>
+                        <td>${cameraId}</td>
+                        <td class="${statusClass}">${info.status}</td>
+                        <td>${info.message}</td>
+                        <td>${timestamp}</td>
+                    </tr>`;
+                }
+                
+                html += '</table>';
+            } else {
+                html += '<p>アクティブなストリーミングはありません</p>';
+            }
+            html += '</div>';
+            
+            // 録画状態
+            html += '<div class="status-section"><h4>録画状態</h4>';
+            if (Object.keys(data.recording).length > 0) {
+                html += '<table><tr><th>カメラID</th><th>状態</th><th>メッセージ</th><th>タイムスタンプ</th></tr>';
+                
+                for (const [cameraId, info] of Object.entries(data.recording)) {
+                    const statusClass = getStatusClass(info.status);
+                    const timestamp = new Date(info.timestamp).toLocaleString();
+                    
+                    html += `<tr>
+                        <td>${cameraId}</td>
+                        <td class="${statusClass}">${info.status}</td>
+                        <td>${info.message}</td>
+                        <td>${timestamp}</td>
+                    </tr>`;
+                }
+                
+                html += '</table>';
+            } else {
+                html += '<p>アクティブな録画はありません</p>';
+            }
+            html += '</div>';
+            
+            statusContent.innerHTML = html;
+        }
+        
+        function getStatusClass(status) {
+            switch (status) {
+                case 'streaming':
+                case 'recording':
+                    return 'status-success';
+                case 'starting':
+                case 'restarting':
+                    return 'status-warning';
+                case 'error':
+                case 'process_died':
+                case 'no_output':
+                case 'stalled':
+                    return 'status-error';
+                case 'stopped':
+                    return 'status-info';
+                default:
+                    return '';
+            }
+        }
+        
+        // ページロード時に状態確認
+        window.addEventListener('load', checkSystemStatus);
+    </script>
+</body>
+</html>

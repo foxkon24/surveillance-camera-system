@@ -20,6 +20,8 @@ streaming_processes = {}
 hls_last_update = {}
 # m3u8ファイルの前回のサイズを追跡
 m3u8_last_size = {}
+# ストリーミングステータスを保持
+streaming_status = {}  # 追加
 # 健全性チェックの間隔（秒）
 HEALTH_CHECK_INTERVAL = 15
 # ファイル更新タイムアウト（秒）- この時間以上更新がない場合は問題と判断
@@ -37,6 +39,13 @@ def get_or_start_streaming(camera):
     """
     if camera['id'] not in streaming_processes:
         try:
+            # ストリーミングの開始をステータスに記録
+            streaming_status[camera['id']] = {
+                'status': 'starting',
+                'message': 'Starting streaming process',
+                'timestamp': time.time()
+            }
+            
             camera_tmp_dir = os.path.join(config.TMP_PATH, camera['id'])
             fs_utils.ensure_directory_exists(camera_tmp_dir)
 
@@ -49,6 +58,17 @@ def get_or_start_streaming(camera):
             # 既存のffmpegプロセスが残っている場合、強制終了
             ffmpeg_utils.kill_ffmpeg_processes(camera['id'])
             time.sleep(1)  # プロセス終了待ち
+
+            # RTSPストリームに接続できるかテスト
+            if not test_rtsp_connection(camera['rtsp_url']):
+                error_msg = f"Cannot connect to RTSP stream: {camera['rtsp_url']}"
+                logging.error(error_msg)
+                streaming_status[camera['id']] = {
+                    'status': 'error',
+                    'message': error_msg,
+                    'timestamp': time.time()
+                }
+                return False
 
             # Nginx用に最適化されたHLSセグメントパス
             segment_path = os.path.join(camera_tmp_dir, f"{camera['id']}_%03d.ts").replace('/', '\\')
@@ -71,6 +91,14 @@ def get_or_start_streaming(camera):
             else:
                 m3u8_last_size[camera['id']] = 0
 
+            # エラー出力を監視するスレッド
+            error_thread = threading.Thread(
+                target=ffmpeg_utils.monitor_ffmpeg_output,
+                args=(process, camera['id']),
+                daemon=True
+            )
+            error_thread.start()
+
             # 監視スレッドを開始
             monitor_thread = threading.Thread(
                 target=monitor_streaming_process,
@@ -87,14 +115,120 @@ def get_or_start_streaming(camera):
             )
             hls_monitor_thread.start()
 
-            logging.info(f"Started streaming for camera {camera['id']}")
+            # ストリーミング開始を確認
+            success = verify_streaming_started(camera['id'], hls_path)
+            if success:
+                logging.info(f"Started streaming for camera {camera['id']}")
+                streaming_status[camera['id']] = {
+                    'status': 'streaming',
+                    'message': 'Streaming in progress',
+                    'timestamp': time.time()
+                }
+            else:
+                logging.error(f"Failed to start streaming for camera {camera['id']} - no .m3u8 file created")
+                streaming_status[camera['id']] = {
+                    'status': 'error',
+                    'message': 'Failed to start streaming - no .m3u8 file created',
+                    'timestamp': time.time()
+                }
+                # プロセスを終了
+                if camera['id'] in streaming_processes:
+                    try:
+                        ffmpeg_utils.terminate_process(streaming_processes[camera['id']])
+                        del streaming_processes[camera['id']]
+                    except Exception as e:
+                        logging.error(f"Error terminating process: {e}")
+                return False
+                
             return True
 
         except Exception as e:
             logging.error(f"Error starting streaming for camera {camera['id']}: {e}")
+            streaming_status[camera['id']] = {
+                'status': 'error',
+                'message': f"Failed to start streaming: {str(e)}",
+                'timestamp': time.time()
+            }
             return False
 
     return True
+
+def test_rtsp_connection(rtsp_url, timeout=5):
+    """
+    RTSPストリームに接続できるかテストする関数
+    
+    Args:
+        rtsp_url (str): テストするRTSP URL
+        timeout (int): 接続タイムアウト（秒）
+        
+    Returns:
+        bool: 接続に成功したかどうか
+    """
+    try:
+        # FFprobeを使用して接続テスト（短時間で終了するオプション）
+        ffprobe_command = [
+            'ffprobe',
+            '-v', 'error',
+            '-rtsp_transport', 'tcp',
+            '-i', rtsp_url,
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=codec_type',
+            '-of', 'json',
+            '-timeout', str(timeout * 1000000)  # マイクロ秒単位
+        ]
+        
+        result = subprocess.run(
+            ffprobe_command, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE, 
+            timeout=timeout+2  # プロセス自体のタイムアウト
+        )
+        
+        # 成功ならば終了コードは0
+        if result.returncode == 0:
+            logging.info(f"RTSP connection test successful: {rtsp_url}")
+            return True
+            
+        # エラー内容をログに記録
+        error_output = result.stderr.decode('utf-8', errors='replace')
+        logging.warning(f"RTSP connection test failed: {rtsp_url} - {error_output}")
+        return False
+        
+    except subprocess.TimeoutExpired:
+        logging.warning(f"RTSP connection test timed out: {rtsp_url}")
+        return False
+    except Exception as e:
+        logging.error(f"Error testing RTSP connection: {e}")
+        return False
+
+def verify_streaming_started(camera_id, hls_path, max_attempts=10, check_interval=1):
+    """
+    ストリーミングが正常に開始されたことを検証する
+    
+    Args:
+        camera_id (str): カメラID
+        hls_path (str): .m3u8ファイルのパス
+        max_attempts (int): 最大確認回数
+        check_interval (float): 確認間隔（秒）
+        
+    Returns:
+        bool: ストリーミングが正常に開始されたかどうか
+    """
+    attempts = 0
+    
+    while attempts < max_attempts:
+        if os.path.exists(hls_path) and os.path.getsize(hls_path) > 0:
+            # TSファイルも確認
+            camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
+            ts_files = [f for f in os.listdir(camera_tmp_dir) if f.endswith('.ts')]
+            
+            if ts_files:
+                return True
+                
+        attempts += 1
+        time.sleep(check_interval)
+    
+    return False
 
 def restart_streaming(camera_id):
     """
@@ -108,6 +242,11 @@ def restart_streaming(camera_id):
     """
     try:
         logging.warning(f"Restarting streaming for camera {camera_id}")
+        streaming_status[camera_id] = {
+            'status': 'restarting',
+            'message': 'Restarting streaming',
+            'timestamp': time.time()
+        }
         
         # 既存のffmpegプロセスを強制終了
         ffmpeg_utils.kill_ffmpeg_processes(camera_id)
@@ -125,13 +264,28 @@ def restart_streaming(camera_id):
                 return True
             else:
                 logging.error(f"Failed to restart streaming for camera {camera_id}")
+                streaming_status[camera_id] = {
+                    'status': 'error',
+                    'message': 'Failed to restart streaming',
+                    'timestamp': time.time()
+                }
                 return False
         else:
             logging.error(f"Camera config not found for camera {camera_id}")
+            streaming_status[camera_id] = {
+                'status': 'error',
+                'message': 'Camera configuration not found',
+                'timestamp': time.time()
+            }
             return False
     
     except Exception as e:
         logging.error(f"Error restarting streaming for camera {camera_id}: {e}")
+        streaming_status[camera_id] = {
+            'status': 'error',
+            'message': f"Error restarting streaming: {str(e)}",
+            'timestamp': time.time()
+        }
         return False
 
 def monitor_hls_updates(camera_id):
@@ -190,6 +344,11 @@ def monitor_hls_updates(camera_id):
                 
                 if failures >= max_failures:
                     logging.error(f"HLS update timeout detected for camera {camera_id}. Restarting streaming.")
+                    streaming_status[camera_id] = {
+                        'status': 'stalled',
+                        'message': f"HLS files not updated for {current_time - last_update:.2f} seconds",
+                        'timestamp': current_time
+                    }
                     restart_streaming(camera_id)
                     failures = 0
                     
@@ -224,6 +383,13 @@ def monitor_streaming_process(camera_id, process):
                 logging.warning(f"Streaming process for camera {camera_id} has died. "
                                 f"Attempt {consecutive_failures}/{max_failures}. "
                                 f"Waiting {current_delay} seconds before retry.")
+                
+                # ステータスを更新
+                streaming_status[camera_id] = {
+                    'status': 'process_died',
+                    'message': f"Streaming process died. Attempt {consecutive_failures}/{max_failures}",
+                    'timestamp': time.time()
+                }
 
                 # 既存のffmpegプロセスを強制終了
                 ffmpeg_utils.kill_ffmpeg_processes(camera_id)
@@ -251,6 +417,25 @@ def monitor_streaming_process(camera_id, process):
             else:
                 # プロセスが正常な場合、失敗カウントをリセット
                 consecutive_failures = 0
+
+                # プロセスは実行中だがHLSファイルが存在するか確認
+                camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
+                hls_path = os.path.join(camera_tmp_dir, f"{camera_id}.m3u8").replace('/', '\\')
+                
+                if not os.path.exists(hls_path) and camera_id in hls_last_update:
+                    # 最後の更新から30秒以上経過していて、ファイルが存在しない場合
+                    current_time = time.time()
+                    last_update = hls_last_update.get(camera_id, 0)
+                    
+                    if (current_time - last_update) > 30:
+                        logging.error(f"HLS file does not exist for camera {camera_id} after 30 seconds. Restarting streaming.")
+                        streaming_status[camera_id] = {
+                            'status': 'no_output',
+                            'message': "HLS file not created despite running process",
+                            'timestamp': current_time
+                        }
+                        restart_streaming(camera_id)
+                        break
 
         except Exception as e:
             logging.error(f"Error monitoring streaming process for camera {camera_id}: {e}")
@@ -358,6 +543,13 @@ def stop_all_streaming():
                     ffmpeg_utils.terminate_process(process)
                 del streaming_processes[camera_id]
                 logging.info(f"Stopped streaming for camera {camera_id}")
+                
+                # ステータスを更新
+                streaming_status[camera_id] = {
+                    'status': 'stopped',
+                    'message': 'Streaming stopped by user',
+                    'timestamp': time.time()
+                }
 
             except Exception as e:
                 logging.error(f"Error stopping streaming for camera {camera_id}: {e}")
@@ -378,3 +570,31 @@ def initialize_streaming():
     cleanup_thread = threading.Thread(target=cleanup_scheduler, daemon=True)
     cleanup_thread.start()
     logging.info("Started segment cleanup scheduler thread")
+
+def get_streaming_status():
+    """
+    すべてのカメラのストリーミング状態を取得
+    
+    Returns:
+        dict: カメラIDをキー、状態情報を値とする辞書
+    """
+    # 現在のストリーミングプロセスの状態を確認して更新
+    for camera_id in streaming_processes:
+        if camera_id not in streaming_status:
+            streaming_status[camera_id] = {
+                'status': 'streaming',
+                'message': 'Streaming in progress',
+                'timestamp': time.time()
+            }
+        elif streaming_status[camera_id]['status'] != 'error':
+            # エラー状態でなければプロセスの状態を確認
+            process = streaming_processes[camera_id]
+            if process.poll() is not None:
+                # プロセスが終了している
+                streaming_status[camera_id] = {
+                    'status': 'stopped',
+                    'message': 'Streaming process has stopped unexpectedly',
+                    'timestamp': time.time()
+                }
+    
+    return streaming_status

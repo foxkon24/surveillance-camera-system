@@ -1,0 +1,225 @@
+@charset "utf-8";
+
+html, body {
+    height: 100%;
+}
+
+body {
+    margin: 0 auto;
+    padding: 0 auto;
+    font-family: "ヒラギノ角ゴ Pro W3", "Hiragino Kaku Gothic Pro", "メイリオ", Meiryo, Osaka, "ＭＳ Ｐゴシック", "MS PGothic", sans-serif;  /*フォント種類*/
+    background-color: #ffffff;
+}
+
+.layout {
+    display: grid;
+    grid-template-rows: 55px 25px 10% 10% 3fr 25px;
+    grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+}
+
+header {
+    grid-row: 1;
+    grid-column: 1 / 7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 170%;  /* 文字サイズ */
+    color: #ffffff;
+    background-color: #4169e1;
+}
+
+footer {
+    grid-row: 8;
+    grid-column: 1 / 7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 70%;  /* 文字サイズ */
+    color: #ffffff;
+    background-color: #4169e1;
+}
+
+/* navigation */
+nav {
+    grid-row: 2;
+    grid-column: 1 / 7;
+    background-color: dimgray;
+    text-align: left;
+    padding-top: 0px;
+    box-sizing: border-box;
+}
+ul {
+    display: block;
+    overflow: hidden;
+    list-style: none;
+    margin: 0 auto;
+}
+ul li {
+    display: inline-block;
+}
+ul li:hover {
+    -webkit-transform-origin: left top;
+    -ms-transform-origin: left top;
+    transform-origin: left top;
+    -webkit-transform: scale(1, 1);
+    -ms-transform: scale(1, 1);
+    transform: scale(1, 1)
+}
+a {
+    display: block;
+    align-items: center;
+    justify-content: center;
+    text-wrap: nowrap;
+    text-decoration: none;
+    color: white;
+    margin-left: 10px;
+    margin-right: 10px;
+}
+
+/* live streaming */
+.controls {
+    grid-row: 3;
+    grid-column: 1 / 7;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px; /* ボタン間のスペース */
+    margin-bottom: 5px;
+}
+
+.msg {
+    grid-row: 4;
+    grid-column: 1 / 7;
+    display: grid;
+    grid-template-columns: repeat(3, auto); /* 列のグリッドを設定 */
+    margin: 5px;
+    font-size: 1.1em;
+    color: #333;
+}
+
+.container {
+    grid-row: 5;
+    grid-column: 1 / 7;
+    width: 100%;
+    margin: 0 auto;
+    overflow-y: auto; /* 縦スクロールを有効にする */
+    overflow-x: hidden; /* 横スクロールを無効にする */
+    padding: 0 5px;
+}
+
+.grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    justify-content: flex-start;
+    padding: 5px;
+}
+
+.camera {
+    flex: 0 0 auto;
+    background: #f5f5f5;
+    padding: 10px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.camera h4 {
+    margin: 0 0 10px 0;
+    font-size: 1.2em;
+    color: #333;
+}
+
+video {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 4/3;
+    background: #000;
+    border-radius: 4px;
+}
+
+button {
+    margin: 10px;
+    padding: 10px 20px;
+    font-size: 14px;
+    background-color: #0066cc;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color 0.3s;
+    height: 50px;
+}
+
+button:hover {
+    background-color: #0052a3;
+}
+
+h1, h2, h3, h4, h5, p, ul, ol, li, dl, dt, dd, form, figure, form { margin: 0px; padding: 0px; font-size: 100%; font-weight: normal; }
+
+img { border: none; max-width: 100%; width: auto; height: auto; vertical-align: middle; }
+
+iframe { width: 100%; }
+
+/* システム状態表示用のスタイル */
+.status-area {
+    margin: 20px 0;
+    padding: 15px;
+    background: #f9f9f9;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    overflow-y: auto;
+}
+
+.status-section {
+    margin-bottom: 20px;
+}
+
+.status-section h4 {
+    margin-bottom: 10px;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #ccc;
+    font-weight: bold;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 15px;
+}
+
+th, td {
+    padding: 8px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+}
+
+th {
+    background-color: #f0f0f0;
+}
+
+.status-success {
+    color: #28a745;
+    font-weight: bold;
+}
+
+.status-warning {
+    color: #ffc107;
+    font-weight: bold;
+}
+
+.status-error {
+    color: #dc3545;
+    font-weight: bold;
+}
+
+.status-info {
+    color: #17a2b8;
+    font-weight: bold;
+}
+
+.error {
+    color: #dc3545;
+    font-weight: bold;
+}

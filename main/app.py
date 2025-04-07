@@ -125,6 +125,19 @@ def stop_all_recordings_route():
         logging.error(f"Failed to stop all recordings: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/system/cam/status')
+def system_status():
+    """システム状態API"""
+    try:
+        status = {
+            'streaming': streaming.get_streaming_status(),
+            'recording': recording.get_recording_status(),
+        }
+        return jsonify(status)
+    except Exception as e:
+        logging.error(f"Error getting system status: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/system/cam/')
 def index():
     """メインページ"""
@@ -176,6 +189,24 @@ def backup_recordings():
     camera_names = camera_utils.read_config_names()
 
     return render_template('backup_recordings.html', recordings=recordings, camera_names=camera_names)
+
+@app.route('/check_rtsp', methods=['POST'])
+def check_rtsp():
+    """RTSPストリームの接続確認API"""
+    data = request.json
+    rtsp_url = data.get('rtsp_url')
+    
+    if not rtsp_url:
+        return jsonify({"status": "error", "message": "RTSP URL is required"}), 400
+        
+    try:
+        if streaming.test_rtsp_connection(rtsp_url):
+            return jsonify({"status": "success", "message": "Connection successful"})
+        else:
+            return jsonify({"status": "error", "message": "Failed to connect to RTSP stream"}), 400
+    except Exception as e:
+        logging.error(f"Error checking RTSP connection: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 def initialize_app():
     """アプリケーション初期化"""
