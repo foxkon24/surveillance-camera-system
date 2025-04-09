@@ -2,9 +2,8 @@
 
 @if not "%~0"=="%~dp0.\%~nx0" start /min cmd /c,"%~dp0.\%~nx0" %* & goto :eof
 
-cd D:\xampp\htdocs\system\cam
+echo Starting camera monitoring system with elevated privileges...
 
-cd %~dp0
+powershell -Command "Start-Process cmd -ArgumentList '/c cd %~dp0 && python app.py' -Verb RunAs"
 
-python app.py
-
+pause
