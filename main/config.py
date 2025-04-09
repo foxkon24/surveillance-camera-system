@@ -5,6 +5,7 @@
 import os
 import logging
 import sys
+import subprocess
 
 # 基本パス設定
 BASE_PATH = os.path.join('D:\\', 'laragon', 'www', 'system', 'cam')
@@ -55,11 +56,12 @@ def check_config_file():
 def check_ffmpeg():
     """FFmpegの利用可能性をチェック"""
     try:
-        import subprocess
-
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+        # シェルを使用して実行（権限問題回避）
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, shell=True)
         if result.returncode == 0:
             logging.info("FFmpegが正常に検出されました")
+            # FFmpegバージョンを出力
+            logging.info(f"FFmpeg version: {result.stdout.splitlines()[0]}")
             return True
         else:
             logging.error("FFmpegが見つかりません")
