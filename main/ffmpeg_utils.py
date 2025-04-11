@@ -67,68 +67,9 @@ def kill_ffmpeg_processes(camera_id=None):
         logging.error(f'An error occurred during killing ffmpeg processes: {str(e)}')
         return False
 
-def check_rtsp_connection(rtsp_url, max_attempts=3):
-    """
-    RTSPストリームへの接続を確認する
-
-    Args:
-        rtsp_url (str): チェックするRTSP URL
-        max_attempts (int): 再試行回数
-
-    Returns:
-        bool: 接続に成功したかどうか
-    """
-    for attempt in range(1, max_attempts + 1):
-        try:
-            logging.info(f"Checking RTSP connection to {rtsp_url} (attempt {attempt}/{max_attempts})")
-            
-            # ストリーミングで使用しているのと同じ設定でテスト
-            ffprobe_command = [
-                'ffprobe',
-                '-v', 'quiet',
-                '-rtsp_transport', 'tcp',
-                '-i', rtsp_url,
-                '-show_format',
-                '-print_format', 'json',
-                '-hide_banner'
-            ]
-            
-            result = subprocess.run(ffprobe_command, capture_output=True, text=True, timeout=10)
-            
-            if result.returncode == 0:
-                logging.info(f"Successfully connected to RTSP stream: {rtsp_url}")
-                return True
-            
-            # 失敗した場合、UDPも試してみる
-            ffprobe_command_udp = [
-                'ffprobe',
-                '-v', 'quiet',
-                '-rtsp_transport', 'udp',
-                '-i', rtsp_url,
-                '-show_format',
-                '-print_format', 'json',
-                '-hide_banner'
-            ]
-            
-            result_udp = subprocess.run(ffprobe_command_udp, capture_output=True, text=True, timeout=10)
-            
-            if result_udp.returncode == 0:
-                logging.info(f"Successfully connected to RTSP stream using UDP: {rtsp_url}")
-                return True
-            
-            wait_time = min(2 ** attempt, 10)  # 指数バックオフ（最大10秒）
-            logging.warning(f"Connection attempt {attempt} failed. Waiting {wait_time} seconds before retry.")
-            time.sleep(wait_time)
-            
-        except Exception as e:
-            logging.error(f"Error checking RTSP connection (attempt {attempt}): {e}")
-            time.sleep(2)
-    
-    return False
-
 def check_audio_stream(rtsp_url):
     """
-    RTSPストリームに音声が含まれているかチェック - 改善版
+    RTSPストリームに音声が含まれているかチェック
 
     Args:
         rtsp_url (str): チェックするRTSP URL
@@ -143,18 +84,10 @@ def check_audio_stream(rtsp_url):
             '-v', 'quiet',
             '-print_format', 'json',
             '-show_streams',
-            '-rtsp_transport', 'tcp',  # TCPトランスポートを明示的に指定
             '-i', rtsp_url
         ]
 
-        # タイムアウト設定を追加（秒単位）
-        result = subprocess.run(ffprobe_command, capture_output=True, text=True, timeout=10)
-        
-        # 出力が空でないか確認
-        if not result.stdout:
-            logging.error(f"Empty output from FFprobe for {rtsp_url}")
-            return False
-            
+        result = subprocess.run(ffprobe_command, capture_output=True, text=True)
         stream_info = json.loads(result.stdout)
 
         # 音声ストリームの確認
@@ -164,12 +97,6 @@ def check_audio_stream(rtsp_url):
 
         return has_audio
 
-    except subprocess.TimeoutExpired:
-        logging.error(f"Timeout when checking audio stream for {rtsp_url}")
-        return False
-    except json.JSONDecodeError:
-        logging.error(f"Failed to parse FFprobe output for {rtsp_url}")
-        return False
     except Exception as e:
         logging.error(f"Error checking audio stream: {e}")
         return False
@@ -209,7 +136,7 @@ def finalize_recording(file_path):
 
 def start_ffmpeg_process(command, log_path=None, high_priority=True):
     """
-    FFmpegプロセスを開始する - 修正版
+    FFmpegプロセスを開始する
 
     Args:
         command (list): FFmpegコマンドと引数のリスト
@@ -220,20 +147,9 @@ def start_ffmpeg_process(command, log_path=None, high_priority=True):
         subprocess.Popen: 生成されたプロセスオブジェクト
     """
     try:
-        # Windows環境では管理者として実行
-        if os.name == 'nt':
-            creation_flags = subprocess.CREATE_NO_WINDOW
-            if high_priority:
-                creation_flags |= subprocess.HIGH_PRIORITY_CLASS
-            
-            # シェルを使用して実行することで権限の問題を回避
-            shell = True
-            # リストをコマンド文字列に変換
-            if isinstance(command, list):
-                command = ' '.join(command)
-        else:
-            creation_flags = 0
-            shell = False
+        creation_flags = subprocess.CREATE_NO_WINDOW
+        if high_priority:
+            creation_flags |= subprocess.HIGH_PRIORITY_CLASS
 
         if log_path:
             with open(log_path, 'w') as log_file:
@@ -241,8 +157,7 @@ def start_ffmpeg_process(command, log_path=None, high_priority=True):
                     command,
                     stdout=log_file,
                     stderr=log_file,
-                    creationflags=creation_flags,
-                    shell=shell
+                    creationflags=creation_flags
                 )
         else:
             process = subprocess.Popen(
@@ -250,11 +165,11 @@ def start_ffmpeg_process(command, log_path=None, high_priority=True):
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                creationflags=creation_flags,
-                shell=shell
+                creationflags=creation_flags
             )
 
         logging.info(f"Started FFmpeg process with PID: {process.pid}")
+
         return process
 
     except Exception as e:
@@ -367,20 +282,29 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, 
     """
     return [
         'ffmpeg',
-        '-buffer_size', '10240k',    # バッファサイズを増加
+        '-rtsp_transport', 'tcp',           # TCPトランスポートを使用（安定性向上）
+        '-buffer_size', '10240k',           # バッファサイズを増加
         '-use_wallclock_as_timestamps', '1',
+        '-analyzeduration', '2147483647',   # 分析時間を最大化
+        '-probesize', '2147483647',         # プローブサイズを最大化
         '-i', rtsp_url,
         '-reset_timestamps', '1',
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '2',
-        '-thread_queue_size', '8192',  # スレッドキューサイズを増加
-        '-c:v', 'copy',
+        '-thread_queue_size', '8192',       # スレッドキューサイズを増加
+        '-c:v', 'libx264',                  # H.264エンコーダを使用（copyからの変更）
+        '-preset', 'ultrafast',             # 最速のエンコード設定（低遅延）
+        '-tune', 'zerolatency',             # 低遅延用チューニング
+        '-profile:v', 'baseline',           # ベースラインプロファイル（互換性向上）
+        '-level', '3.0',                    # レベル設定
+        '-pix_fmt', 'yuv420p',              # ピクセルフォーマット指定（緑色画面防止）
         '-c:a', 'aac',
         '-b:a', '128k',
         '-ar', '44100',
         '-ac', '2',
+        '-max_muxing_queue_size', '1024',   # マックスキューサイズ指定
         f'-hls_time', str(segment_time),
         f'-hls_list_size', str(list_size),
         '-hls_flags', 'delete_segments+append_list+program_date_time+independent_segments',
@@ -404,24 +328,30 @@ def get_ffmpeg_record_command(rtsp_url, output_path):
     return [
         'ffmpeg',
         '-rtsp_transport', 'tcp',             # TCPトランスポートを使用
-        '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
         '-buffer_size', '10240k',             # バッファサイズを増加
+        '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
+        '-analyzeduration', '2147483647',     # 入力ストリームの分析時間を延長
+        '-probesize', '2147483647',           # プローブサイズを増やす
         '-i', rtsp_url,
         '-reset_timestamps', '1',             # タイムスタンプをリセット
         '-reconnect', '1',                    # 接続が切れた場合に再接続を試みる
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '2',          # 最大再接続遅延を2秒に設定
-        '-thread_queue_size', '8192',         # スレッドキューサイズを増加
-        '-analyzeduration', '2147483647',     # 入力ストリームの分析時間を延長
-        '-probesize', '2147483647',           # プローブサイズを増やす
-        '-c:v', 'copy',                       # ビデオコーデックをそのままコピー
+        '-thread_queue_size', '8192',         # 入力バッファサイズを増やす
+        '-c:v', 'libx264',                    # H.264エンコーダを使用（copyからの変更）
+        '-preset', 'ultrafast',               # 最速のエンコード設定
+        '-tune', 'zerolatency',               # 低遅延用チューニング
+        '-profile:v', 'baseline',             # ベースラインプロファイル
+        '-level', '3.0',                      # レベル設定
+        '-pix_fmt', 'yuv420p',                # ピクセルフォーマット指定
         '-c:a', 'aac',                        # 音声コーデックをAACに設定
         '-b:a', '128k',                       # 音声ビットレート
         '-ar', '44100',                       # サンプリングレート
         '-ac', '2',                           # ステレオ音声
         '-async', '1',                        # 音声の同期モード
         '-max_delay', '500000',               # 最大遅延時間（マイクロ秒）
+        '-max_muxing_queue_size', '1024',     # マックスキューサイズ指定
         '-movflags', '+faststart',            # ファストスタートフラグを設定
         '-y',                                 # 既存のファイルを上書き
         output_path
