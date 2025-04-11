@@ -1,3 +1,0 @@
-@echo off
-echo Starting camera monitoring system with elevated privileges...
-powershell -Command "Start-Process cmd -ArgumentList '/c cd %~dp0 && python app.py' -Verb RunAs"
