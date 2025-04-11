@@ -50,9 +50,10 @@ def get_or_start_streaming(camera):
             ffmpeg_utils.kill_ffmpeg_processes(camera['id'])
             time.sleep(1)  # プロセス終了待ち
 
-            # RTSPへの接続をチェック
+            # RTSPストリームの接続確認
             if not ffmpeg_utils.check_rtsp_connection(camera['rtsp_url']):
-                logging.warning(f"Could not connect to RTSP stream for camera {camera['id']}. Will try anyway.")
+                logging.warning(f"Failed to connect to RTSP stream for camera {camera['id']}: {camera['rtsp_url']}")
+                # 接続に失敗しても続行する - 後でリトライするため
 
             # Nginx用に最適化されたHLSセグメントパス
             segment_path = os.path.join(camera_tmp_dir, f"{camera['id']}_%03d.ts").replace('/', '\\')

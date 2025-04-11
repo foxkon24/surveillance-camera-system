@@ -61,7 +61,7 @@ def start_recording(camera_id, rtsp_url):
 
 def start_new_recording(camera_id, rtsp_url):
     """
-    新しい録画プロセスを開始する - 改善版
+    新しい録画プロセスを開始する
 
     Args:
         camera_id (str): カメラID
@@ -70,7 +70,7 @@ def start_new_recording(camera_id, rtsp_url):
     try:
         logging.info(f"Starting new recording for camera {camera_id} with URL {rtsp_url}")
 
-        # 改善されたRTSP接続チェックを使用
+        # RTSP接続の確認
         if not ffmpeg_utils.check_rtsp_connection(rtsp_url):
             error_msg = f"Cannot connect to RTSP stream: {rtsp_url}"
             logging.error(error_msg)
@@ -91,32 +91,11 @@ def start_new_recording(camera_id, rtsp_url):
         file_path = fs_utils.get_record_file_path(config.RECORD_PATH, camera_id)
         logging.info(f"Recording will be saved to: {file_path}")
 
-        # FFmpegコマンドを生成 - ストリーミングと同様の設定を使用
-        ffmpeg_command = [
-            'ffmpeg',
-            '-rtsp_transport', 'tcp',
-            '-use_wallclock_as_timestamps', '1',
-            '-buffer_size', '10240k',    # ストリーミングと同様のバッファサイズ
-            '-i', rtsp_url,
-            '-reset_timestamps', '1',
-            '-reconnect', '1',
-            '-reconnect_at_eof', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '2',
-            '-thread_queue_size', '8192',  # ストリーミングと同じキューサイズ
-            '-c:v', 'copy',
-            '-c:a', 'aac',
-            '-b:a', '128k',
-            '-ar', '44100',
-            '-ac', '2',
-            '-movflags', '+faststart',
-            '-y',
-            file_path
-        ]
-        
+        # FFmpegコマンドを生成
+        ffmpeg_command = ffmpeg_utils.get_ffmpeg_record_command(rtsp_url, file_path)
         logging.info(f"Executing FFmpeg command: {' '.join(ffmpeg_command)}")
 
-        # プロセスを開始 - 改善された関数を使用
+        # プロセスを開始
         process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command)
 
         # プロセス情報を保存

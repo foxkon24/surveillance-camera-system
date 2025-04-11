@@ -183,6 +183,7 @@ def initialize_app():
         # ロギングの設定
         config.setup_logging()
 
+        # ログの初期メッセージ
         logging.info("============= アプリケーション起動 =============")
         logging.info(f"実行パス: {os.getcwd()}")
         logging.info(f"Pythonバージョン: {sys.version}")

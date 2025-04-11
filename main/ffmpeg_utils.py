@@ -11,6 +11,51 @@ import re
 import os
 import threading
 
+def check_rtsp_connection(rtsp_url, timeout=10):
+    """
+    RTSP接続の可否をチェックする関数
+
+    Args:
+        rtsp_url (str): チェックするRTSP URL
+        timeout (int): タイムアウト秒数
+
+    Returns:
+        bool: 接続が成功したかどうか
+    """
+    try:
+        ffprobe_command = [
+            'ffprobe',
+            '-v', 'error',
+            '-rtsp_transport', 'tcp',
+            '-i', rtsp_url,
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            '-read_intervals', '%+3'
+        ]
+
+        # タイムアウトを設定
+        result = subprocess.run(
+            ffprobe_command, 
+            timeout=timeout,
+            capture_output=True,
+            text=True
+        )
+
+        # 終了コードが0なら接続成功
+        if result.returncode == 0:
+            logging.info(f"RTSP connection successful: {rtsp_url}")
+            return True
+        else:
+            logging.warning(f"RTSP connection failed: {rtsp_url}, Error: {result.stderr}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logging.error(f"RTSP connection timeout: {rtsp_url}")
+        return False
+    except Exception as e:
+        logging.error(f"Error checking RTSP connection: {rtsp_url}, Error: {e}")
+        return False
+
 def kill_ffmpeg_processes(camera_id=None):
     """
     ffmpegプロセスを強制終了する関数
@@ -282,29 +327,20 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, 
     """
     return [
         'ffmpeg',
-        '-rtsp_transport', 'tcp',           # TCPトランスポートを使用（安定性向上）
-        '-buffer_size', '10240k',           # バッファサイズを増加
+        '-buffer_size', '10240k',    # バッファサイズを増加
         '-use_wallclock_as_timestamps', '1',
-        '-analyzeduration', '2147483647',   # 分析時間を最大化
-        '-probesize', '2147483647',         # プローブサイズを最大化
         '-i', rtsp_url,
         '-reset_timestamps', '1',
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '2',
-        '-thread_queue_size', '8192',       # スレッドキューサイズを増加
-        '-c:v', 'libx264',                  # H.264エンコーダを使用（copyからの変更）
-        '-preset', 'ultrafast',             # 最速のエンコード設定（低遅延）
-        '-tune', 'zerolatency',             # 低遅延用チューニング
-        '-profile:v', 'baseline',           # ベースラインプロファイル（互換性向上）
-        '-level', '3.0',                    # レベル設定
-        '-pix_fmt', 'yuv420p',              # ピクセルフォーマット指定（緑色画面防止）
+        '-thread_queue_size', '8192',  # スレッドキューサイズを増加
+        '-c:v', 'copy',
         '-c:a', 'aac',
         '-b:a', '128k',
         '-ar', '44100',
         '-ac', '2',
-        '-max_muxing_queue_size', '1024',   # マックスキューサイズ指定
         f'-hls_time', str(segment_time),
         f'-hls_list_size', str(list_size),
         '-hls_flags', 'delete_segments+append_list+program_date_time+independent_segments',
@@ -328,30 +364,23 @@ def get_ffmpeg_record_command(rtsp_url, output_path):
     return [
         'ffmpeg',
         '-rtsp_transport', 'tcp',             # TCPトランスポートを使用
-        '-buffer_size', '10240k',             # バッファサイズを増加
         '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
-        '-analyzeduration', '2147483647',     # 入力ストリームの分析時間を延長
-        '-probesize', '2147483647',           # プローブサイズを増やす
         '-i', rtsp_url,
         '-reset_timestamps', '1',             # タイムスタンプをリセット
         '-reconnect', '1',                    # 接続が切れた場合に再接続を試みる
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '2',          # 最大再接続遅延を2秒に設定
-        '-thread_queue_size', '8192',         # 入力バッファサイズを増やす
-        '-c:v', 'libx264',                    # H.264エンコーダを使用（copyからの変更）
-        '-preset', 'ultrafast',               # 最速のエンコード設定
-        '-tune', 'zerolatency',               # 低遅延用チューニング
-        '-profile:v', 'baseline',             # ベースラインプロファイル
-        '-level', '3.0',                      # レベル設定
-        '-pix_fmt', 'yuv420p',                # ピクセルフォーマット指定
+        '-thread_queue_size', '1024',         # 入力バッファサイズを増やす
+        '-analyzeduration', '2147483647',     # 入力ストリームの分析時間を延長
+        '-probesize', '2147483647',           # プローブサイズを増やす
+        '-c:v', 'copy',                       # ビデオコーデックをそのままコピー
         '-c:a', 'aac',                        # 音声コーデックをAACに設定
         '-b:a', '128k',                       # 音声ビットレート
         '-ar', '44100',                       # サンプリングレート
         '-ac', '2',                           # ステレオ音声
         '-async', '1',                        # 音声の同期モード
         '-max_delay', '500000',               # 最大遅延時間（マイクロ秒）
-        '-max_muxing_queue_size', '1024',     # マックスキューサイズ指定
         '-movflags', '+faststart',            # ファストスタートフラグを設定
         '-y',                                 # 既存のファイルを上書き
         output_path
