@@ -20,25 +20,12 @@ streaming_processes = {}
 hls_last_update = {}
 # m3u8ファイルの前回のサイズを追跡
 m3u8_last_size = {}
+# RTSPトランスポートモードを保存
+rtsp_transport_mode = {}
 # 健全性チェックの間隔（秒）
 HEALTH_CHECK_INTERVAL = 15
 # ファイル更新タイムアウト（秒）- この時間以上更新がない場合は問題と判断
 HLS_UPDATE_TIMEOUT = 30
-
-def get_camera_streaming_status():
-    """
-    各カメラのストリーミング状態を取得
-
-    Returns:
-        dict: カメラIDをキー、ストリーミング状態を値とする辞書
-    """
-    status = {}
-    for camera_id, process in streaming_processes.items():
-        if process and process.poll() is None:
-            status[camera_id] = "running"
-        else:
-            status[camera_id] = "stopped"
-    return status
 
 def get_or_start_streaming(camera):
     """
@@ -65,6 +52,21 @@ def get_or_start_streaming(camera):
             ffmpeg_utils.kill_ffmpeg_processes(camera['id'])
             time.sleep(1)  # プロセス終了待ち
 
+            # RTSPトランスポートモードをテスト
+            transport_mode = rtsp_transport_mode.get(camera['id'], 'tcp')
+            
+            # RTSPストリームの接続テスト
+            logging.info(f"Testing RTSP connection for camera {camera['id']}")
+            connection_ok, recommended_transport, error_msg = ffmpeg_utils.test_rtsp_connection(camera['rtsp_url'])
+            
+            if not connection_ok:
+                logging.error(f"Failed to connect to RTSP stream for camera {camera['id']}: {error_msg}")
+                # エラーがあっても続行試行
+            elif recommended_transport:
+                transport_mode = recommended_transport
+                rtsp_transport_mode[camera['id']] = transport_mode
+                logging.info(f"Using {transport_mode} transport for camera {camera['id']}")
+
             # Nginx用に最適化されたHLSセグメントパス
             segment_path = os.path.join(camera_tmp_dir, f"{camera['id']}_%03d.ts").replace('/', '\\')
             
@@ -72,10 +74,11 @@ def get_or_start_streaming(camera):
             ffmpeg_command = ffmpeg_utils.get_ffmpeg_hls_command(
                 camera['rtsp_url'], 
                 hls_path,
-                segment_path
+                segment_path,
+                rtsp_transport=transport_mode
             )
 
-            # FFmpegコマンドを記録
+            # コマンドをログに記録
             logging.info(f"Starting FFmpeg with command: {' '.join(ffmpeg_command)}")
 
             # プロセス起動
@@ -97,6 +100,14 @@ def get_or_start_streaming(camera):
             )
             monitor_thread.start()
 
+            # プロセスの標準エラー出力を監視するスレッドを開始
+            error_thread = threading.Thread(
+                target=ffmpeg_utils.monitor_ffmpeg_output,
+                args=(process,),
+                daemon=True
+            )
+            error_thread.start()
+
             # ファイル更新監視スレッドを開始
             hls_monitor_thread = threading.Thread(
                 target=monitor_hls_updates,
@@ -105,11 +116,31 @@ def get_or_start_streaming(camera):
             )
             hls_monitor_thread.start()
 
+            # 数秒待ってプロセスのステータスを確認
+            time.sleep(2)
+            if process.poll() is not None:
+                logging.error(f"FFmpeg process for camera {camera['id']} exited with code: {process.poll()}")
+                if process.stderr:
+                    error_output = process.stderr.read()
+                    if error_output:
+                        decoded_output = error_output.decode('utf-8', errors='replace').strip()
+                        logging.error(f"FFmpeg error output: {decoded_output}")
+                
+                # 失敗した場合は別のトランスポートモードを試す
+                if transport_mode == 'tcp':
+                    logging.info(f"Retrying with UDP transport for camera {camera['id']}")
+                    rtsp_transport_mode[camera['id']] = 'udp'
+                    del streaming_processes[camera['id']]
+                    return get_or_start_streaming(camera)
+                else:
+                    logging.error(f"Both TCP and UDP transports failed for camera {camera['id']}")
+                    return False
+            
             logging.info(f"Started streaming for camera {camera['id']}")
             return True
 
         except Exception as e:
-            logging.error(f"Error starting streaming for camera {camera['id']}: {e}")
+            logging.error(f"Error starting streaming for camera {camera['id']}: {e}", exc_info=True)
             return False
 
     return True
@@ -149,7 +180,7 @@ def restart_streaming(camera_id):
             return False
     
     except Exception as e:
-        logging.error(f"Error restarting streaming for camera {camera_id}: {e}")
+        logging.error(f"Error restarting streaming for camera {camera_id}: {e}", exc_info=True)
         return False
 
 def monitor_hls_updates(camera_id):
@@ -236,8 +267,17 @@ def monitor_streaming_process(camera_id, process):
         try:
             # プロセスが終了しているか確認
             if process.poll() is not None:
-                exit_code = process.poll()
-                logging.error(f"FFmpeg process exited with code: {exit_code}")
+                logging.error(f"FFmpeg process exited with code: {process.poll()}")
+                
+                # エラー出力があれば取得
+                if process.stderr:
+                    try:
+                        error_output = process.stderr.read()
+                        if error_output:
+                            decoded_output = error_output.decode('utf-8', errors='replace').strip()
+                            logging.error(f"FFmpeg error output: {decoded_output}")
+                    except Exception as e:
+                        logging.error(f"Error reading stderr: {e}")
                 
                 consecutive_failures += 1
                 current_delay = min(retry_delay * consecutive_failures, max_retry_delay)
@@ -249,6 +289,12 @@ def monitor_streaming_process(camera_id, process):
                 # 既存のffmpegプロセスを強制終了
                 ffmpeg_utils.kill_ffmpeg_processes(camera_id)
                 time.sleep(current_delay)
+
+                # トランスポートモードを切り替え
+                current_mode = rtsp_transport_mode.get(camera_id, 'tcp')
+                new_mode = 'udp' if current_mode == 'tcp' else 'tcp'
+                rtsp_transport_mode[camera_id] = new_mode
+                logging.info(f"Switching transport mode for camera {camera_id} from {current_mode} to {new_mode}")
 
                 if consecutive_failures >= max_failures:
                     logging.error(f"Too many consecutive failures for camera {camera_id}. Performing full restart.")

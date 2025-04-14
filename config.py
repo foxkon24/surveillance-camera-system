@@ -5,8 +5,7 @@
 import os
 import logging
 import sys
-import platform
-import socket
+import time
 
 # 基本パス設定
 BASE_PATH = os.path.join('D:\\', 'laragon', 'www', 'system', 'cam')
@@ -21,13 +20,21 @@ MAX_RECORDING_HOURS = 1  # 最大録画時間（時間）
 MIN_DISK_SPACE_GB = 1    # 最小必要ディスク容量（GB）
 
 # ストリーミング設定
-RETRY_ATTEMPTS = 5       # 再試行回数を増加
-RETRY_DELAY = 5          # 再試行遅延（秒）を短縮
-MAX_RETRY_DELAY = 30     # 最大再試行遅延（秒）
+RETRY_ATTEMPTS = 5       # 再試行回数
+RETRY_DELAY = 5          # 再試行遅延（秒）
+MAX_RETRY_DELAY = 60     # 最大再試行遅延（秒）
 
 # ロギング設定
 def setup_logging():
     """ロギングの設定を行う"""
+    # ログディレクトリが存在しない場合は作成
+    log_dir = os.path.dirname(LOG_PATH)
+    if not os.path.exists(log_dir):
+        try:
+            os.makedirs(log_dir)
+        except Exception as e:
+            print(f"Error creating log directory: {e}")
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -42,18 +49,28 @@ def setup_logging():
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
 
-    logging.info("Logging initialized")
+    # アプリケーション識別情報をログに記録
     logging.info(f"Process ID: {os.getpid()}")
-    logging.info("============= アプリケーション起動 =============")
-    logging.info(f"実行パス: {os.getcwd()}")
-    logging.info(f"Pythonバージョン: {sys.version}")
-    logging.info(f"OSバージョン: {os.name}")
+
+    logging.info("Logging initialized")
 
 # 設定ファイルの存在チェック
 def check_config_file():
     """設定ファイルの存在チェック"""
     if not os.path.exists(CONFIG_PATH):
         logging.error(f"設定ファイルが見つかりません: {CONFIG_PATH}")
+        
+        # サンプル設定ファイルをコピー（存在する場合）
+        sample_path = os.path.join(os.path.dirname(CONFIG_PATH), 'cam_config - sample.txt')
+        if os.path.exists(sample_path):
+            try:
+                import shutil
+                shutil.copy(sample_path, CONFIG_PATH)
+                logging.info(f"サンプル設定ファイルをコピーしました: {CONFIG_PATH}")
+                return True
+            except Exception as e:
+                logging.error(f"サンプル設定ファイルのコピーに失敗しました: {e}")
+        
         return False
 
     return True
@@ -75,18 +92,3 @@ def check_ffmpeg():
     except Exception as e:
         logging.error(f"FFmpeg確認エラー: {e}")
         return False
-
-# サーバーのIPアドレスを取得
-def get_server_ip():
-    """サーバーのIPアドレスを取得"""
-    try:
-        # ローカルネットワーク内のIPアドレスを取得
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # 外部に接続しようとする（実際には接続しない）
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception as e:
-        logging.warning(f"IPアドレス取得エラー: {e}")
-        return "localhost"

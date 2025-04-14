@@ -84,22 +84,102 @@ def check_audio_stream(rtsp_url):
             '-v', 'quiet',
             '-print_format', 'json',
             '-show_streams',
-            '-i', rtsp_url
+            '-i', rtsp_url,
+            '-rtsp_transport', 'tcp',
+            '-timeout', '10000000'  # 10秒のタイムアウト
         ]
 
-        result = subprocess.run(ffprobe_command, capture_output=True, text=True)
-        stream_info = json.loads(result.stdout)
+        result = subprocess.run(ffprobe_command, capture_output=True, text=True, timeout=15)
+        
+        if result.returncode != 0:
+            # TCPで失敗した場合、UDPで試してみる
+            ffprobe_command = [
+                'ffprobe',
+                '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_streams',
+                '-i', rtsp_url,
+                '-rtsp_transport', 'udp',
+                '-timeout', '10000000'  # 10秒のタイムアウト
+            ]
+            result = subprocess.run(ffprobe_command, capture_output=True, text=True, timeout=15)
+        
+        if result.returncode != 0:
+            logging.warning(f"FFprobe failed to get stream info: {result.stderr}")
+            return False
+            
+        try:
+            stream_info = json.loads(result.stdout)
+            
+            # 音声ストリームの確認
+            has_audio = any(stream['codec_type'] == 'audio' for stream in stream_info.get('streams', []))
+            if not has_audio:
+                logging.warning(f"No audio stream detected in RTSP URL: {rtsp_url}")
+                
+            return has_audio
+        except json.JSONDecodeError:
+            logging.error(f"Failed to parse FFprobe output: {result.stdout}")
+            return False
 
-        # 音声ストリームの確認
-        has_audio = any(stream['codec_type'] == 'audio' for stream in stream_info['streams'])
-        if not has_audio:
-            logging.warning(f"No audio stream detected in RTSP URL: {rtsp_url}")
-
-        return has_audio
-
+    except subprocess.TimeoutExpired:
+        logging.error(f"FFprobe timed out while checking audio stream for {rtsp_url}")
+        return False
     except Exception as e:
         logging.error(f"Error checking audio stream: {e}")
         return False
+
+def test_rtsp_connection(rtsp_url):
+    """
+    RTSPストリームへの接続をテスト
+
+    Args:
+        rtsp_url (str): テストするRTSP URL
+
+    Returns:
+        tuple: (接続可能かどうか, 推奨トランスポート, エラーメッセージ)
+    """
+    # TCPトランスポートでテスト
+    tcp_command = [
+        'ffprobe',
+        '-v', 'error',
+        '-rtsp_transport', 'tcp',
+        '-i', rtsp_url,
+        '-timeout', '10000000',
+        '-max_delay', '5000000'
+    ]
+    
+    try:
+        tcp_result = subprocess.run(tcp_command, capture_output=True, text=True, timeout=10)
+        tcp_success = tcp_result.returncode == 0
+        
+        # UDPトランスポートでテスト
+        udp_command = [
+            'ffprobe',
+            '-v', 'error',
+            '-rtsp_transport', 'udp',
+            '-i', rtsp_url,
+            '-timeout', '10000000',
+            '-max_delay', '5000000'
+        ]
+        
+        udp_result = subprocess.run(udp_command, capture_output=True, text=True, timeout=10)
+        udp_success = udp_result.returncode == 0
+        
+        # 結果を分析
+        if tcp_success and udp_success:
+            return True, 'tcp', ""  # TCP優先
+        elif tcp_success:
+            return True, 'tcp', ""
+        elif udp_success:
+            return True, 'udp', ""
+        else:
+            error_msg = tcp_result.stderr if tcp_result.stderr else udp_result.stderr
+            return False, None, error_msg
+            
+    except subprocess.TimeoutExpired:
+        return False, None, "Connection timed out"
+    except Exception as e:
+        return False, None, str(e)
 
 def finalize_recording(file_path):
     """
@@ -185,16 +265,30 @@ def monitor_ffmpeg_output(process):
     """
     while True:
         try:
+            if process.poll() is not None:
+                # プロセスが終了している場合
+                if process.stderr:
+                    # 残りのエラー出力を読み込む
+                    error_output = process.stderr.read()
+                    if error_output:
+                        decoded_output = error_output.decode('utf-8', errors='replace').strip()
+                        logging.error(f"FFmpeg process exited with code: {process.returncode}")
+                        logging.error(f"FFmpeg error output: {decoded_output}")
+                break
+                
             line = process.stderr.readline()
             if not line:
                 break
 
             decoded_line = line.decode('utf-8', errors='replace').strip()
             if decoded_line:
-                if "Error" in decoded_line:
+                # エラーメッセージをログに記録
+                if "Error" in decoded_line or "error" in decoded_line:
                     logging.error(f"FFmpeg error: {decoded_line}")
+                elif "Warning" in decoded_line or "warning" in decoded_line:
+                    logging.warning(f"FFmpeg warning: {decoded_line}")
                 else:
-                    logging.info(f"FFmpeg output: {decoded_line}")
+                    logging.debug(f"FFmpeg output: {decoded_line}")
 
         except Exception as e:
             logging.error(f"Error in FFmpeg output monitoring: {e}")
@@ -266,7 +360,7 @@ def terminate_process(process, timeout=5):
     except Exception as e:
         logging.error(f"Error terminating process: {e}")
 
-def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, list_size=5):
+def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, list_size=5, rtsp_transport='tcp'):
     """
     HLSストリーミング用のFFmpegコマンドを生成
 
@@ -276,66 +370,70 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, 
         segment_path (str): セグメントファイルのパスパターン
         segment_time (int): セグメント長（秒）
         list_size (int): プレイリストのサイズ
+        rtsp_transport (str): RTSPトランスポートプロトコル（'tcp'または'udp'）
 
     Returns:
         list: FFmpegコマンドのリスト
     """
     return [
         'ffmpeg',
-        '-rtsp_transport', 'tcp',
+        '-rtsp_transport', rtsp_transport,
         '-use_wallclock_as_timestamps', '1',
         '-i', rtsp_url,
         '-reset_timestamps', '1',
         '-buffer_size', '10240k',
-        '-max_delay', '500000',
+        '-max_delay', '5000000',  # 5秒のマックス遅延
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',
-        '-thread_queue_size', '8192',
-        '-analyzeduration', '2147483647',
-        '-probesize', '2147483647',
+        '-reconnect_delay_max', '10',  # 最大再接続遅延を10秒に増加
+        '-thread_queue_size', '8192',  # スレッドキューサイズを増加
+        '-analyzeduration', '2147483647',  # 分析期間を最大に
+        '-probesize', '2147483647',  # プローブサイズを最大に
+        '-stimeout', '20000000',  # 接続タイムアウトを20秒に設定
         '-c:v', 'copy',
         '-c:a', 'aac',
         '-b:a', '128k',
         '-ar', '44100',
         '-ac', '2',
         '-f', 'hls',
-        '-hls_time', str(segment_time),
-        '-hls_list_size', str(list_size),
+        f'-hls_time', str(segment_time),
+        f'-hls_list_size', str(list_size),
         '-hls_flags', 'delete_segments+append_list+program_date_time+independent_segments',
         '-hls_segment_type', 'mpegts',
         '-hls_allow_cache', '1',
         '-hls_segment_filename', segment_path,
-        '-loglevel', 'warning',
-        '-y',
+        '-loglevel', 'warning',  # エラーレベルをwarningに設定
+        '-y',  # 上書き確認なし
         output_path
     ]
 
-def get_ffmpeg_record_command(rtsp_url, output_path):
+def get_ffmpeg_record_command(rtsp_url, output_path, rtsp_transport='tcp'):
     """
     録画用のFFmpegコマンドを生成
 
     Args:
         rtsp_url (str): RTSPストリームURL
         output_path (str): 録画ファイルの出力パス
+        rtsp_transport (str): RTSPトランスポートプロトコル（'tcp'または'udp'）
 
     Returns:
         list: FFmpegコマンドのリスト
     """
     return [
         'ffmpeg',
-        '-rtsp_transport', 'tcp',             # TCPトランスポートを使用
+        '-rtsp_transport', rtsp_transport,             # RTSPトランスポートプロトコル
         '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
         '-i', rtsp_url,
         '-reset_timestamps', '1',             # タイムスタンプをリセット
         '-reconnect', '1',                    # 接続が切れた場合に再接続を試みる
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '2',          # 最大再接続遅延を2秒に設定
+        '-reconnect_delay_max', '10',         # 最大再接続遅延を10秒に設定
         '-thread_queue_size', '1024',         # 入力バッファサイズを増やす
         '-analyzeduration', '2147483647',     # 入力ストリームの分析時間を延長
         '-probesize', '2147483647',           # プローブサイズを増やす
+        '-stimeout', '20000000',              # 接続タイムアウトを20秒に設定
         '-c:v', 'copy',                       # ビデオコーデックをそのままコピー
         '-c:a', 'aac',                        # 音声コーデックをAACに設定
         '-b:a', '128k',                       # 音声ビットレート
@@ -344,6 +442,7 @@ def get_ffmpeg_record_command(rtsp_url, output_path):
         '-async', '1',                        # 音声の同期モード
         '-max_delay', '500000',               # 最大遅延時間（マイクロ秒）
         '-movflags', '+faststart',            # ファストスタートフラグを設定
+        '-loglevel', 'warning',               # エラーレベルをwarningに設定
         '-y',                                 # 既存のファイルを上書き
         output_path
     ]

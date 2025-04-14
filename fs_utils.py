@@ -5,22 +5,24 @@
 import os
 import logging
 import psutil
-from datetime import datetime
 import time
-import shutil
+from datetime import datetime
 
 def ensure_directory_exists(path):
     """ディレクトリが存在しない場合は作成"""
     if not os.path.exists(path):
-        os.makedirs(path)
-
         try:
-            os.chmod(path, 0o777)  # ディレクトリに対して全権限を付与
+            os.makedirs(path)
+            logging.info(f"Created directory: {path}")
 
-        except OSError as e:
-            logging.warning(f"Could not set directory permissions for {path}: {e}")
-
-        logging.info(f"Created directory: {path}")
+            try:
+                os.chmod(path, 0o777)  # ディレクトリに対して全権限を付与
+            except OSError as e:
+                logging.warning(f"Could not set directory permissions for {path}: {e}")
+                
+        except Exception as e:
+            logging.error(f"Error creating directory {path}: {e}")
+            raise
 
 def get_free_space(path):
     """
@@ -37,7 +39,11 @@ def get_free_space(path):
             # Windowsの場合はドライブのルートパスを取得
             if os.name == 'nt':
                 drive = os.path.splitdrive(os.path.abspath(path))[0]
-                free_bytes = psutil.disk_usage(drive).free
+                if drive:
+                    free_bytes = psutil.disk_usage(drive).free
+                else:
+                    # ドライブが取得できない場合はパス自体を使用
+                    free_bytes = psutil.disk_usage(path).free
             else:
                 free_bytes = psutil.disk_usage(path).free
 
@@ -105,61 +111,3 @@ def cleanup_directory(directory, file_pattern='', max_age_seconds=None):
 
     except Exception as e:
         logging.error(f"Error cleaning up directory {directory}: {e}")
-
-def secure_delete_file(file_path):
-    """
-    ファイルを安全に削除する（エラーハンドリング強化版）
-
-    Args:
-        file_path (str): 削除するファイルのパス
-        
-    Returns:
-        bool: 操作が成功したかどうか
-    """
-    if not os.path.exists(file_path):
-        return False
-        
-    try:
-        # まずはシンプルに削除を試みる
-        os.remove(file_path)
-        return True
-        
-    except PermissionError:
-        # ファイルがロックされている場合、少し待機してから再試行
-        logging.warning(f"Permission error when deleting {file_path}, retrying...")
-        try:
-            time.sleep(1)
-            os.remove(file_path)
-            return True
-        except Exception as e:
-            logging.error(f"Failed to delete file after retry: {e}")
-            return False
-            
-    except Exception as e:
-        logging.error(f"Error deleting file {file_path}: {e}")
-        return False
-
-def copy_file_with_retries(src, dst, max_retries=3, retry_delay=1):
-    """
-    ファイルをコピーする関数（リトライ機能付き）
-
-    Args:
-        src (str): コピー元ファイルパス
-        dst (str): コピー先ファイルパス
-        max_retries (int): 最大再試行回数
-        retry_delay (int): 再試行の間隔（秒）
-        
-    Returns:
-        bool: 操作が成功したかどうか
-    """
-    for attempt in range(max_retries + 1):
-        try:
-            shutil.copy2(src, dst)
-            return True
-        except Exception as e:
-            if attempt < max_retries:
-                logging.warning(f"Failed to copy {src} to {dst} (attempt {attempt+1}): {e}")
-                time.sleep(retry_delay)
-            else:
-                logging.error(f"Failed to copy {src} to {dst} after {max_retries} attempts: {e}")
-                return False

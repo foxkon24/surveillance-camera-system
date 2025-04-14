@@ -13,12 +13,12 @@ import config
 import ffmpeg_utils
 import fs_utils
 import camera_utils
+import streaming
 
 # グローバル変数
 recording_processes = {}
 recording_threads = {}
 recording_start_times = {}  # 録画開始時刻を保持する辞書
-recording_status = {}       # 録画のステータスを保持する辞書
 
 def start_recording(camera_id, rtsp_url):
     """
@@ -35,10 +35,6 @@ def start_recording(camera_id, rtsp_url):
         # 既存のプロセスが存在する場合は終了
         if camera_id in recording_processes:
             stop_recording(camera_id)
-            time.sleep(2)  # 確実に終了するための待機時間
-
-        # 録画状態を「準備中」に設定
-        recording_status[camera_id] = "initializing"
 
         # 録画用ディレクトリの確認と作成
         camera_dir = os.path.join(config.RECORD_PATH, camera_id)
@@ -53,15 +49,6 @@ def start_recording(camera_id, rtsp_url):
                         f"Available: {available_space / (1024*1024*1024):.2f} GB, " \
                         f"Required: {config.MIN_DISK_SPACE_GB} GB"
             logging.error(error_msg)
-            recording_status[camera_id] = "disk_space_error"
-            raise Exception(error_msg)
-
-        # RTSP接続テスト
-        connection_successful, error_message = ffmpeg_utils.check_rtsp_connection(rtsp_url)
-        if not connection_successful:
-            error_msg = f"RTSP connection test failed for camera {camera_id}: {error_message}"
-            logging.error(error_msg)
-            recording_status[camera_id] = "connection_error"
             raise Exception(error_msg)
 
         # 新しい録画を開始
@@ -71,7 +58,6 @@ def start_recording(camera_id, rtsp_url):
     except Exception as e:
         error_msg = f"Error starting recording for camera {camera_id}: {e}"
         logging.error(error_msg)
-        recording_status[camera_id] = "error"
         raise Exception(error_msg)
 
 def start_new_recording(camera_id, rtsp_url):
@@ -84,7 +70,20 @@ def start_new_recording(camera_id, rtsp_url):
     """
     try:
         logging.info(f"Starting new recording for camera {camera_id} with URL {rtsp_url}")
-        recording_status[camera_id] = "starting"
+
+        # 推奨トランスポートモードを取得（ストリーミングから取得）
+        rtsp_transport = streaming.rtsp_transport_mode.get(camera_id, 'tcp')
+        
+        # RTSPストリームの接続テスト
+        logging.info(f"Testing RTSP connection for recording camera {camera_id}")
+        connection_ok, recommended_transport, error_msg = ffmpeg_utils.test_rtsp_connection(rtsp_url)
+        
+        if not connection_ok:
+            logging.error(f"Failed to connect to RTSP stream for recording camera {camera_id}: {error_msg}")
+            # エラーがあっても続行を試みる
+        elif recommended_transport:
+            rtsp_transport = recommended_transport
+            logging.info(f"Using {rtsp_transport} transport for recording camera {camera_id}")
 
         # 音声ストリームの確認を追加
         has_audio = ffmpeg_utils.check_audio_stream(rtsp_url)
@@ -102,7 +101,7 @@ def start_new_recording(camera_id, rtsp_url):
         logging.info(f"Recording will be saved to: {file_path}")
 
         # FFmpegコマンドを生成
-        ffmpeg_command = ffmpeg_utils.get_ffmpeg_record_command(rtsp_url, file_path)
+        ffmpeg_command = ffmpeg_utils.get_ffmpeg_record_command(rtsp_url, file_path, rtsp_transport)
         logging.info(f"Executing FFmpeg command: {' '.join(ffmpeg_command)}")
 
         # プロセスを開始
@@ -114,26 +113,16 @@ def start_new_recording(camera_id, rtsp_url):
             'file_path': file_path
         }
         recording_start_times[camera_id] = datetime.now()
-        recording_status[camera_id] = "recording"
 
         logging.info(f"Recording process started with PID {process.pid}")
 
-        # プロセスの状態を確認
-        time.sleep(2)  # プロセスの起動を待つ
-
-        if process.poll() is not None:
-            return_code = process.poll()
-            error_output = "unknown error"
-            if process.stderr:
-                try:
-                    error_output = process.stderr.read().decode('utf-8', errors='replace')
-                except Exception as e:
-                    logging.warning(f"Failed to read stderr: {e}")
-                    
-            logging.error(f"FFmpeg process failed to start. Return code: {return_code}")
-            logging.error(f"FFmpeg error output: {error_output}")
-            recording_status[camera_id] = "process_failed"
-            raise Exception(f"FFmpeg failed to start: {error_output}")
+        # エラー出力を監視するスレッド
+        error_thread = threading.Thread(
+            target=ffmpeg_utils.monitor_ffmpeg_output, 
+            args=(process,), 
+            daemon=True
+        )
+        error_thread.start()
 
         # 録画時間監視スレッドの開始
         if camera_id not in recording_threads or not recording_threads[camera_id].is_alive():
@@ -141,10 +130,65 @@ def start_new_recording(camera_id, rtsp_url):
             monitor_thread.start()
             recording_threads[camera_id] = monitor_thread
 
+        # プロセスの状態を確認
+        time.sleep(2)  # プロセスの起動を待つ
+
+        if process.poll() is not None:
+            return_code = process.poll()
+            error_output = ""
+            if process.stderr:
+                try:
+                    error_output = process.stderr.read().decode('utf-8', errors='replace')
+                except:
+                    error_output = "Could not read stderr"
+                
+            logging.error(f"FFmpeg process failed to start. Return code: {return_code}")
+            logging.error(f"FFmpeg error output: {error_output}")
+            
+            # TCPで失敗したらUDPを試す、その逆も
+            if rtsp_transport == 'tcp':
+                logging.info(f"Retrying recording with UDP transport for camera {camera_id}")
+                rtsp_transport = 'udp'
+                # 録画をクリーンアップ
+                if camera_id in recording_processes:
+                    del recording_processes[camera_id]
+                if os.path.exists(file_path) and os.path.getsize(file_path) == 0:
+                    try:
+                        os.remove(file_path)
+                    except:
+                        pass
+                
+                # 新しいコマンドとプロセスで再試行
+                file_path = fs_utils.get_record_file_path(config.RECORD_PATH, camera_id)
+                ffmpeg_command = ffmpeg_utils.get_ffmpeg_record_command(rtsp_url, file_path, rtsp_transport)
+                logging.info(f"Retrying FFmpeg command: {' '.join(ffmpeg_command)}")
+                
+                process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command)
+                
+                recording_processes[camera_id] = {
+                    'process': process,
+                    'file_path': file_path
+                }
+                recording_start_times[camera_id] = datetime.now()
+                
+                # 再度モニタリングスレッドを設定
+                error_thread = threading.Thread(
+                    target=ffmpeg_utils.monitor_ffmpeg_output, 
+                    args=(process,), 
+                    daemon=True
+                )
+                error_thread.start()
+                
+                time.sleep(2)
+                if process.poll() is not None:
+                    logging.error(f"Both TCP and UDP transports failed for recording camera {camera_id}")
+                    raise Exception(f"FFmpeg failed to start with both TCP and UDP: {error_output}")
+            else:
+                raise Exception(f"FFmpeg failed to start: {error_output}")
+
     except Exception as e:
         logging.error(f"Error starting new recording for camera {camera_id}: {e}")
         logging.exception("Full stack trace:")
-        recording_status[camera_id] = "error"
         raise
 
 def stop_recording(camera_id):
@@ -158,7 +202,6 @@ def stop_recording(camera_id):
         bool: 操作が成功したかどうか
     """
     logging.info(f"Attempting to stop recording for camera {camera_id}")
-    recording_status[camera_id] = "stopping"
 
     recording_info = recording_processes.pop(camera_id, None)
 
@@ -182,24 +225,19 @@ def stop_recording(camera_id):
 
                 if file_size > 0:
                     ffmpeg_utils.finalize_recording(file_path)
-                    recording_status[camera_id] = "stopped"
                 else:
                     logging.warning("Recording file is empty")
-                    recording_status[camera_id] = "empty_file"
             else:
                 logging.error(f"Recording file not found: {file_path}")
-                recording_status[camera_id] = "file_not_found"
 
             return True
 
         except Exception as e:
             logging.error(f"Error in stop_recording: {e}")
             logging.exception("Full stack trace:")
-            recording_status[camera_id] = "error"
             return False
     else:
         logging.warning(f"No recording process found for camera {camera_id}")
-        recording_status[camera_id] = "not_recording"
         return False
 
 def check_recording_duration(camera_id):
@@ -213,24 +251,6 @@ def check_recording_duration(camera_id):
         try:
             if camera_id not in recording_processes:
                 logging.info(f"Recording process for camera {camera_id} no longer exists. Stopping monitor thread.")
-                break
-
-            # プロセスが生きているかチェック
-            process_info = recording_processes[camera_id]
-            process = process_info['process']
-            if process.poll() is not None:
-                logging.warning(f"Recording process for camera {camera_id} has died with code {process.poll()}. Will attempt restart.")
-                recording_status[camera_id] = "process_died"
-                
-                # カメラ情報を取得して再起動
-                camera_config = camera_utils.get_camera_by_id(camera_id)
-                if camera_config:
-                    try:
-                        # 少し待機してから再開
-                        time.sleep(5)
-                        start_new_recording(camera_id, camera_config['rtsp_url'])
-                    except Exception as e:
-                        logging.error(f"Failed to restart recording for camera {camera_id}: {e}")
                 break
 
             current_time = datetime.now()
@@ -255,11 +275,9 @@ def check_recording_duration(camera_id):
                     start_new_recording(camera_id, camera_config['rtsp_url'])
                 else:
                     logging.error(f"Camera configuration not found for camera {camera_id}")
-                    recording_status[camera_id] = "config_not_found"
 
         except Exception as e:
             logging.error(f"Error in check_recording_duration for camera {camera_id}: {e}")
-            recording_status[camera_id] = "monitor_error"
 
         time.sleep(10)  # より頻繁なチェック間隔
 
@@ -279,7 +297,6 @@ def monitor_recording_processes():
                     # プロセスの状態を確認
                     if process.poll() is not None:  # プロセスが終了している場合
                         logging.warning(f"Recording process for camera {camera_id} has died. Restarting...")
-                        recording_status[camera_id] = "process_died"
 
                         # 録画を再開
                         try:
@@ -290,7 +307,6 @@ def monitor_recording_processes():
 
                         except Exception as e:
                             logging.error(f"Failed to restart recording for camera {camera_id}: {e}")
-                            recording_status[camera_id] = "restart_failed"
 
         except Exception as e:
             logging.error(f"Error in monitor_recording_processes: {e}")
@@ -301,9 +317,6 @@ def initialize_recording():
     """
     録画システムの初期化
     """
-    # 初期化前に既存のFFmpegプロセスをクリーンアップ
-    ffmpeg_utils.kill_ffmpeg_processes()
-    
     # 監視スレッドの起動
     monitor_thread = threading.Thread(target=monitor_recording_processes, daemon=True)
     monitor_thread.start()
@@ -322,7 +335,6 @@ def start_all_recordings():
         try:
             if camera['rtsp_url']:
                 start_recording(camera['id'], camera['rtsp_url'])
-                logging.info(f"Started recording for camera {camera['id']}")
 
         except Exception as e:
             logging.error(f"Failed to start recording for camera {camera['id']}: {e}")
@@ -342,37 +354,9 @@ def stop_all_recordings():
     for camera_id in camera_ids:
         try:
             stop_recording(camera_id)
-            logging.info(f"Stopped recording for camera {camera_id}")
 
         except Exception as e:
             logging.error(f"Failed to stop recording for camera {camera_id}: {e}")
             success = False
 
     return success
-
-def get_recording_status():
-    """
-    各カメラの録画状態を取得する
-
-    Returns:
-        dict: カメラIDをキー、状態を値とする辞書
-    """
-    statuses = {}
-    
-    # 各プロセスの状態を更新
-    for camera_id, process_info in recording_processes.items():
-        process = process_info['process']
-        
-        # プロセスが終了していたら状態を更新
-        if process.poll() is not None:
-            statuses[camera_id] = "process_died"
-        else:
-            # 正常に録画中
-            statuses[camera_id] = recording_status.get(camera_id, "recording")
-    
-    # その他の状態を統合
-    for camera_id, status in recording_status.items():
-        if camera_id not in statuses:
-            statuses[camera_id] = status
-    
-    return statuses
