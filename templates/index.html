@@ -50,7 +50,7 @@
                         <h4>{{ camera.name }}</h4>
                         <div class="video-wrapper">
                             <video id="video{{ camera.id }}" autoplay playsinline muted style="width: 320px; height: 240px;"></video>
-                            <div class="stream-status" id="status{{ camera.id }}"></div>
+                            <div class="stream-status" id="status{{ camera.id }}">接続中...</div>
                         </div>
                     </div>
                 {% endfor %}
@@ -71,6 +71,16 @@
             const statusElement = document.getElementById('status' + cameraId);
             if (statusElement) {
                 statusElement.textContent = status;
+                
+                // ステータスに応じてクラスを変更
+                statusElement.className = 'stream-status';
+                if (status === '接続済') {
+                    statusElement.classList.add('connected');
+                } else if (status.includes('エラー')) {
+                    statusElement.classList.add('error');
+                } else if (status.includes('再接続') || status.includes('バッファリング')) {
+                    statusElement.classList.add('reconnecting');
+                }
             }
         }
 
@@ -80,6 +90,7 @@
             
             if (players[cameraId]) {
                 players[cameraId].destroy();
+                players[cameraId] = null;
             }
             
             // 少し待ってから再初期化
@@ -88,6 +99,11 @@
 
         function initializePlayer(cameraId) {
             const video = document.getElementById('video' + cameraId);
+            if (!video) {
+                console.error(`Video element not found for camera ${cameraId}`);
+                return;
+            }
+            
             const filePath = '/system/cam/tmp/' + cameraId + '/' + cameraId + '.m3u8';
 
             if (players[cameraId]) {
@@ -96,6 +112,7 @@
 
             retryAttempts[cameraId] = 0;
             streamTimestamps[cameraId] = Date.now();  // 初期化時のタイムスタンプを記録
+            updateStreamStatus(cameraId, '接続中...');
 
             if (Hls.isSupported()) {
                 const hls = new Hls({
@@ -106,25 +123,14 @@
                     maxBufferLength: 10,
                     maxMaxBufferLength: 20,
                     manifestLoadingTimeOut: 10000,
-                    manifestLoadingMaxRetry: 3,
+                    manifestLoadingMaxRetry: 5,  // 再試行回数を増やす
                     levelLoadingTimeOut: 10000,
-                    levelLoadingMaxRetry: 3,
+                    levelLoadingMaxRetry: 5,     // 再試行回数を増やす 
                     fragLoadingTimeOut: 10000,
-                    fragLoadingMaxRetry: 3,
-                    // 追加のオプション
-                    capLevelToPlayerSize: true,  // プレイヤーサイズに合わせてレベルを制限
-                    startLevel: -1,              // 自動選択(-1)
-                    defaultAudioCodec: 'mp4a.40.2', // 標準的なAACコーデック指定
-                    progressive: false,          // 通常のHLSストリーミング
-                    xhrSetup: function(xhr) {
-                        xhr.addEventListener('error', function() {
-                            console.log('xhr error occurred');
-                        });
-                    }
+                    fragLoadingMaxRetry: 5       // 再試行回数を増やす
                 });
 
                 players[cameraId] = hls;
-                updateStreamStatus(cameraId, '接続中...');
 
                 hls.loadSource(filePath);
                 hls.attachMedia(video);
@@ -141,6 +147,10 @@
                 // フラグメントロード成功時にタイムスタンプを更新
                 hls.on(Hls.Events.FRAG_LOADED, function() {
                     streamTimestamps[cameraId] = Date.now();
+                    // 接続状態を更新
+                    if (video.readyState >= 3) {
+                        updateStreamStatus(cameraId, '接続済');
+                    }
                 });
 
                 hls.on(Hls.Events.ERROR, function(event, data) {
@@ -181,6 +191,7 @@
                 });
 
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // HLS.jsがサポートされていない場合のフォールバック（主にiOS）
                 video.src = filePath;
                 video.addEventListener('loadedmetadata', function() {
                     video.play().catch(function(error) {
@@ -188,6 +199,13 @@
                         video.muted = true;
                         video.play();
                     });
+                });
+                video.addEventListener('playing', function() {
+                    updateStreamStatus(cameraId, '接続済');
+                });
+                video.addEventListener('error', function() {
+                    updateStreamStatus(cameraId, 'エラー発生');
+                    setTimeout(() => reloadStream(cameraId), RETRY_DELAY);
                 });
             }
         }
@@ -198,13 +216,15 @@
             setInterval(() => {
                 const cameraId = '{{ camera.id }}';
                 const video = document.getElementById('video' + cameraId);
+                if (!video) return;
+                
                 const currentTime = Date.now();
                 const lastUpdateTime = streamTimestamps[cameraId] || 0;
                 
                 // 再生状態チェック - readyState 0はストリームが読み込まれていない状態
                 if (video && video.readyState === 0) {
                     console.log(`Camera ${cameraId} stream not loaded, attempting recovery...`);
-                    updateStreamStatus(cameraId, '再接続中...');
+                    updateStreamStatus(cameraId, '接続中...');
                     reloadStream(cameraId);
                     return;
                 }
@@ -251,6 +271,7 @@
                 for (const cameraId in players) {
                     if (players[cameraId]) {
                         players[cameraId].stopLoad();
+                        updateStreamStatus(cameraId, '一時停止');
                     }
                 }
             } else {
@@ -258,7 +279,11 @@
                 for (const cameraId in players) {
                     if (players[cameraId]) {
                         players[cameraId].startLoad();
+                        updateStreamStatus(cameraId, '再接続中...');
                         streamTimestamps[cameraId] = Date.now(); // タイムスタンプを更新
+                    } else {
+                        // プレイヤーが無効になっている場合は再初期化
+                        initializePlayer(cameraId);
                     }
                 }
             }
