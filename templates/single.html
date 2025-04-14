@@ -5,19 +5,106 @@
     <meta name="viewport" content="width=device-width,initial-scale=1, minimum-scale=1, shrink-to-fit=no, user-scalable=no">
     <link rel="stylesheet" href="/static/css/style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.18/hls.js"></script>
-    <title>監視カメラシステム</title>
+    <title>監視カメラシステム - {{ camera.name }}</title>
+    <style>
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 1280px;
+            max-height: calc(100vh - 200px);
+            margin: 0 auto;
+        }
+        video {
+            width: 100%;
+            height: auto;
+            max-height: calc(100vh - 200px);
+            background-color: #000;
+        }
+        .stream-status {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            background-color: rgba(0, 0, 0, 0.6);
+            color: white;
+            border-radius: 5px;
+            font-size: 14px;
+            z-index: 10;
+        }
+        .loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 5;
+        }
+        .spinner {
+            border: 5px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 5px solid #fff;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .retry-message {
+            color: white;
+            margin-top: 15px;
+            font-size: 16px;
+            text-align: center;
+        }
+        .controls {
+            margin-top: 15px;
+            text-align: center;
+        }
+        .control-button {
+            padding: 8px 15px;
+            margin: 0 5px;
+            background-color: #333;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .control-button:hover {
+            background-color: #555;
+        }
+    </style>
 </head>
 <body>
     <div class="layout">
         <header><h1>監視カメラシステム</h1></header>
         <nav>
+            <ul>
+                <li><a href="/system/cam/">Top</a></li>
+                <li><a href="/system/cam/record/">録画データ</a></li>
+                <li><a href="/system/cam/backup/">バックアップ録画一覧</a></li>
+            </ul>
         </nav>
         <div class="container">
             <div class="camera">
                 <h4>{{ camera.name }}</h4>
                 <div class="video-container">
+                    <div class="loading-overlay" id="loading-overlay">
+                        <div>
+                            <div class="spinner"></div>
+                            <div class="retry-message" id="retry-message">接続中...</div>
+                        </div>
+                    </div>
                     <video id="video{{ camera.id }}" autoplay playsinline muted></video>
-                    <div class="stream-status" id="status-main"></div>
+                    <div class="stream-status" id="status-main">接続中...</div>
+                </div>
+                <div class="controls">
+                    <button class="control-button" onclick="reloadStream()">ストリームを再読み込み</button>
+                    <button class="control-button" onclick="window.location.href='/system/cam/'">一覧に戻る</button>
                 </div>
             </div>
         </div>
@@ -28,8 +115,9 @@
         let retryAttempts = 0;
         let lastDataReceived = Date.now();  // データ受信の最終時刻
         const MAX_RETRY_ATTEMPTS = 5;
-        const RETRY_DELAY = 3000;
-        const HEALTH_CHECK_INTERVAL = 10000;  // 10秒ごとにチェック
+        const INITIAL_RETRY_DELAY = 1000;  // 初期再試行遅延
+        const MAX_RETRY_DELAY = 8000;      // 最大再試行遅延
+        const HEALTH_CHECK_INTERVAL = 5000;  // 5秒ごとにチェック
         const STREAM_STALL_TIMEOUT = 20000;   // 20秒間データなしでリロード
 
         function updateStreamStatus(status) {
@@ -39,14 +127,31 @@
             }
         }
 
+        function updateLoadingState(isLoading, message = '') {
+            const loadingOverlay = document.getElementById('loading-overlay');
+            const retryMessage = document.getElementById('retry-message');
+            
+            if (loadingOverlay) {
+                loadingOverlay.style.display = isLoading ? 'flex' : 'none';
+            }
+            
+            if (retryMessage && message) {
+                retryMessage.textContent = message;
+            }
+        }
+
         function reloadStream() {
-            console.log("Reloading stream due to stall or error");
+            console.log("Reloading stream due to manual request");
             updateStreamStatus('再読み込み中...');
+            updateLoadingState(true, '再接続中...');
             
             if (hls) {
                 hls.destroy();
                 hls = null;
             }
+            
+            // リトライカウンタをリセット
+            retryAttempts = 0;
             
             // 少し待ってから再初期化
             setTimeout(initializePlayer, 1000);
@@ -64,6 +169,7 @@
             retryAttempts = 0;
             lastDataReceived = Date.now();  // 初期化時にタイムスタンプをリセット
             updateStreamStatus('接続中...');
+            updateLoadingState(true, '接続中...');
 
             if (Hls.isSupported()) {
                 hls = new Hls({
@@ -73,22 +179,22 @@
                     backBufferLength: 30,
                     maxBufferLength: 10,
                     maxMaxBufferLength: 20,
+                    xhrSetup: function(xhr, url) {
+                        // タイムスタンプをURLに追加してキャッシュを防止
+                        if (url.includes('.m3u8')) {
+                            url = url + (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
+                            xhr.open('GET', url, true);
+                        }
+                    },
                     manifestLoadingTimeOut: 10000,
                     manifestLoadingMaxRetry: 3,
+                    manifestLoadingRetryDelay: 1000,
                     levelLoadingTimeOut: 10000,
                     levelLoadingMaxRetry: 3,
+                    levelLoadingRetryDelay: 1000,
                     fragLoadingTimeOut: 10000,
                     fragLoadingMaxRetry: 3,
-                    // 追加のオプション
-                    capLevelToPlayerSize: true,  // プレイヤーサイズに合わせてレベルを制限
-                    startLevel: -1,              // 自動選択(-1)
-                    defaultAudioCodec: 'mp4a.40.2', // 標準的なAACコーデック指定
-                    progressive: false,          // 通常のHLSストリーミング
-                    xhrSetup: function(xhr) {
-                        xhr.addEventListener('error', function() {
-                            console.log('xhr error occurred');
-                        });
-                    }
+                    fragLoadingRetryDelay: 1000
                 });
 
                 hls.loadSource(filePath);
@@ -101,43 +207,60 @@
                         video.play();
                     });
                     updateStreamStatus('接続済');
+                    updateLoadingState(false);
                 });
                 
                 // フラグメントが正常にロードされた時のイベント
                 hls.on(Hls.Events.FRAG_LOADED, function() {
                     lastDataReceived = Date.now();
-                    // console.log("Fragment loaded, updating timestamp");
+                    updateStreamStatus('ストリーム受信中');
+                    updateLoadingState(false);
                 });
 
                 hls.on(Hls.Events.ERROR, function(event, data) {
                     console.log('HLS error:', data);
                     
+                    // m3u8ファイルが見つからない場合のメッセージを更新
+                    if (data.response && data.response.code === 404) {
+                        updateLoadingState(true, 'ストリーム準備中...');
+                        updateStreamStatus('初期化中...');
+                    }
+                    
                     if (data.fatal) {
                         updateStreamStatus('エラー発生');
+                        updateLoadingState(true, 'エラー発生 - 再接続中...');
 
                         switch(data.type) {
                             case Hls.ErrorTypes.NETWORK_ERROR:
                                 console.log('Network error, attempting recovery...');
+                                
+                                // 指数バックオフを使用した再試行
+                                const currentRetry = retryAttempts++;
+                                const delay = Math.min(INITIAL_RETRY_DELAY * Math.pow(2, currentRetry), MAX_RETRY_DELAY);
+                                
+                                updateLoadingState(true, `再接続中... (${currentRetry+1}回目)`);
+                                
                                 if (retryAttempts < MAX_RETRY_ATTEMPTS) {
-                                    retryAttempts++;
-                                    updateStreamStatus('再接続中...');
                                     setTimeout(() => {
                                         hls.startLoad();
-                                    }, RETRY_DELAY);
+                                    }, delay);
                                 } else {
-                                    reloadStream();
+                                    updateLoadingState(true, 'ストリーム読込失敗 - 再読み込みボタンをクリックしてください');
                                 }
                                 break;
                             case Hls.ErrorTypes.MEDIA_ERROR:
                                 console.log('Media error, attempting recovery...');
+                                updateLoadingState(true, 'メディアエラー - 修復中...');
                                 hls.recoverMediaError();
                                 break;
                             default:
                                 if (retryAttempts < MAX_RETRY_ATTEMPTS) {
                                     retryAttempts++;
-                                    setTimeout(initializePlayer, RETRY_DELAY);
+                                    const delay = Math.min(INITIAL_RETRY_DELAY * Math.pow(2, retryAttempts-1), MAX_RETRY_DELAY);
+                                    updateLoadingState(true, `エラー - 再接続中... (${retryAttempts}回目)`);
+                                    setTimeout(initializePlayer, delay);
                                 } else {
-                                    reloadStream();
+                                    updateLoadingState(true, 'ストリーム読込失敗 - 再読み込みボタンをクリックしてください');
                                 }
                                 break;
                         }
@@ -153,6 +276,17 @@
                         video.play();
                     });
                 });
+                video.addEventListener('playing', function() {
+                    updateStreamStatus('再生中');
+                    updateLoadingState(false);
+                });
+                video.addEventListener('error', function() {
+                    updateStreamStatus('エラー発生');
+                    updateLoadingState(true, 'ビデオエラー - 再読み込みボタンをクリックしてください');
+                });
+            } else {
+                updateLoadingState(true, 'このブラウザはHLSをサポートしていません');
+                updateStreamStatus('非対応ブラウザ');
             }
         }
 
@@ -166,6 +300,7 @@
                 if (video && video.readyState === 0) {
                     console.log('Stream not loaded, attempting recovery...');
                     updateStreamStatus('再接続中...');
+                    updateLoadingState(true, 'ストリームが読み込まれていません - 再接続中...');
                     reloadStream();
                     return;
                 }
@@ -174,6 +309,7 @@
                 if (currentTime - lastDataReceived > STREAM_STALL_TIMEOUT) {
                     console.log(`Stream stalled (no data for ${(currentTime - lastDataReceived)/1000}s), reloading...`);
                     updateStreamStatus('データ停止 - 再読み込み中...');
+                    updateLoadingState(true, 'データ受信停止 - 再接続中...');
                     reloadStream();
                     return;
                 }
