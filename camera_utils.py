@@ -6,8 +6,6 @@ import os
 import logging
 from datetime import datetime
 import config
-import subprocess
-import json
 
 def read_config():
     """
@@ -19,40 +17,48 @@ def read_config():
     try:
         # 設定ファイルが存在するか確認
         if not os.path.exists(config.CONFIG_PATH):
-            logging.error(f"設定ファイルが見つかりません: {config.CONFIG_PATH}")
+            logging.error(f"カメラ設定ファイルが見つかりません: {config.CONFIG_PATH}")
             return []
-            
+
         with open(config.CONFIG_PATH, 'r', encoding='utf-8') as file:
             cameras = []
+            line_number = 0
 
             for line in file:
+                line_number += 1
+                # コメント行や空行をスキップ
                 line = line.strip()
-                # 空行をスキップ
                 if not line or line.startswith('#'):
                     continue
-                    
-                parts = line.strip().split(',')
 
-                # RTSPURLが空の場合はスキップ
-                if len(parts) >= 3 and parts[2].strip():
-                    camera = {
-                        'id': parts[0],
-                        'name': parts[1],
-                        'rtsp_url': parts[2]
-                    }
-                    
-                    # オプションの追加フィールドを処理
-                    if len(parts) > 3:
-                        for i in range(3, len(parts)):
-                            if '=' in parts[i]:
-                                key, value = parts[i].split('=', 1)
-                                camera[key.strip()] = value.strip()
-                    
-                    cameras.append(camera)
+                try:
+                    parts = line.split(',')
+
+                    # 最低限の要素数チェック
+                    if len(parts) < 3:
+                        logging.warning(f"設定ファイルの {line_number} 行目のフォーマットが不正です: {line}")
+                        continue
+
+                    # RTSPURLが空の場合はスキップ
+                    if not parts[2].strip():
+                        logging.warning(f"設定ファイルの {line_number} 行目のRTSP URLが空です: {line}")
+                        continue
+
+                    cameras.append({
+                        'id': parts[0].strip(),
+                        'name': parts[1].strip(),
+                        'rtsp_url': parts[2].strip()
+                    })
+
+                except Exception as e:
+                    logging.error(f"設定ファイルの {line_number} 行目の解析中にエラーが発生しました: {e}")
+                    continue
 
             if not cameras:
-                logging.warning("有効なカメラ設定が見つかりません")
-                
+                logging.warning("有効なカメラ設定が見つかりませんでした")
+            else:
+                logging.info(f"{len(cameras)} 台のカメラ設定を読み込みました")
+
             return cameras
 
     except Exception as e:
@@ -68,16 +74,22 @@ def read_config_names():
     """
     camera_names = {}
     try:
+        if not os.path.exists(config.CONFIG_PATH):
+            logging.error(f"カメラ設定ファイルが見つかりません: {config.CONFIG_PATH}")
+            return {}
+
         with open(config.CONFIG_PATH, 'r', encoding='utf-8') as file:
             for line in file:
+                # コメント行や空行をスキップ
                 line = line.strip()
-                # 空行をスキップ
                 if not line or line.startswith('#'):
                     continue
-                    
-                parts = line.strip().split(',')
+
+                parts = line.split(',')
                 if len(parts) >= 2:
-                    camera_names[parts[0]] = parts[1]  # カメラIDと名前をマッピング
+                    camera_id = parts[0].strip()
+                    camera_name = parts[1].strip()
+                    camera_names[camera_id] = camera_name  # カメラIDと名前をマッピング
 
     except Exception as e:
         logging.error(f"設定ファイル読み込みエラー: {e}")
@@ -115,28 +127,35 @@ def get_recordings(base_path=None):
                 # MP4ファイルのリストを取得
                 mp4_files = []
 
-                for file in os.listdir(camera_path):
-                    if file.endswith('.mp4'):
-                        # ファイル情報を取得
-                        file_path = os.path.join(camera_path, file)
-                        file_size = os.path.getsize(file_path)
-                        file_mtime = os.path.getmtime(file_path)
+                try:
+                    for file in os.listdir(camera_path):
+                        if file.endswith('.mp4'):
+                            # ファイル情報を取得
+                            file_path = os.path.join(camera_path, file)
+                            
+                            try:
+                                file_size = os.path.getsize(file_path)
+                                file_mtime = os.path.getmtime(file_path)
 
-                        # ファイル名から日時を解析
-                        try:
-                            # ファイル名のフォーマット: <カメラID>_YYYYMMDDHHmmSS.mp4
-                            date_str = file.split('_')[1].split('.')[0]
-                            date = datetime.strptime(date_str, '%Y%m%d%H%M%S')
+                                # ファイル名から日時を解析
+                                try:
+                                    # ファイル名のフォーマット: <カメラID>_YYYYMMDDHHmmSS.mp4
+                                    date_str = file.split('_')[1].split('.')[0]
+                                    date = datetime.strptime(date_str, '%Y%m%d%H%M%S')
+                                except Exception:
+                                    date = datetime.fromtimestamp(file_mtime)
 
-                        except:
-                            date = datetime.fromtimestamp(file_mtime)
-
-                        mp4_files.append({
-                            'filename': file,
-                            'size': file_size,
-                            'date': date,
-                            'mtime': file_mtime
-                        })
+                                mp4_files.append({
+                                    'filename': file,
+                                    'size': file_size,
+                                    'date': date,
+                                    'mtime': file_mtime
+                                })
+                            except Exception as e:
+                                logging.warning(f"ファイル情報取得エラー {file}: {e}")
+                except Exception as e:
+                    logging.error(f"ディレクトリ読み込みエラー {camera_path}: {e}")
+                    continue
 
                 # 日時でソート（新しい順）
                 mp4_files.sort(key=lambda x: x['date'], reverse=True)
@@ -163,85 +182,68 @@ def get_camera_by_id(camera_id):
         if camera['id'] == camera_id:
             return camera
 
+    logging.warning(f"Camera ID {camera_id} not found in configuration")
     return None
 
-def test_rtsp_connection(rtsp_url, timeout=5):
+def validate_rtsp_url(rtsp_url):
     """
-    RTSPストリームの接続をテストする
+    RTSP URLの形式を検証する
 
     Args:
-        rtsp_url (str): テストするRTSP URL
-        timeout (int): タイムアウト秒数
+        rtsp_url (str): 検証するRTSP URL
 
     Returns:
-        tuple: (成功したかどうか, エラーメッセージ)
+        bool: URLが有効かどうか
+        str: エラーメッセージ（有効な場合は空文字）
     """
-    try:
-        # FFprobeを使用してRTSPストリームをテスト
-        command = [
-            'ffprobe',
-            '-rtsp_transport', 'tcp',
-            '-v', 'error',
-            '-timeout', str(timeout * 1000000),  # マイクロ秒単位
-            '-i', rtsp_url,
-            '-show_entries', 'stream=codec_type',
-            '-of', 'json'
-        ]
-        
-        result = subprocess.run(command, capture_output=True, timeout=timeout+2)
-        
-        if result.returncode == 0:
-            # 成功
-            return (True, "Connection successful")
-        else:
-            # 失敗
-            error_output = result.stderr.decode('utf-8', errors='replace')
-            if "401 Unauthorized" in error_output:
-                return (False, "Authentication failed - incorrect username or password")
-            elif "Connection timed out" in error_output or "Operation timed out" in error_output:
-                return (False, "Connection timed out - check IP address and network")
-            else:
-                return (False, f"Connection failed: {error_output.strip()}")
-                
-    except subprocess.TimeoutExpired:
-        return (False, "Process timed out")
-    except Exception as e:
-        return (False, f"Error: {str(e)}")
-
-def get_rtsp_url_with_auth(camera):
-    """
-    認証情報を含むRTSP URLを安全に生成する
-
-    Args:
-        camera (dict): カメラ情報辞書
-
-    Returns:
-        str: 正規化されたRTSP URL
-    """
-    try:
-        # RTSPのURLパターンを解析
-        base_url = camera['rtsp_url']
-        
-        # すでに認証情報が含まれている場合はそのまま返す
-        if '@' in base_url and '://' in base_url:
-            return base_url
-        
-        # URLパターンが rtsp:// で始まることを確認
-        if not base_url.startswith('rtsp://'):
-            logging.warning(f"Invalid RTSP URL format for camera {camera['id']}: {base_url}")
-            return base_url
-        
-        # 認証情報がある場合は追加
-        if 'username' in camera and 'password' in camera:
-            # rtsp:// の後に認証情報を挿入
-            url_parts = base_url.split('://', 1)
-            if len(url_parts) == 2:
-                protocol, address = url_parts
-                auth_url = f"{protocol}://{camera['username']}:{camera['password']}@{address}"
-                return auth_url
-        
-        return base_url
+    if not rtsp_url:
+        return False, "RTSP URLが空です"
     
+    # 基本的な形式チェック
+    if not rtsp_url.startswith('rtsp://'):
+        return False, "URLはrtsp://で始まる必要があります"
+
+    # 最低限のコンポーネントを持っているか
+    parts = rtsp_url.split('/')
+    if len(parts) < 4:  # ['rtsp:', '', 'host:port', 'path']
+        return False, "URLの形式が不正です。rtsp://ホスト[:ポート]/パスの形式である必要があります"
+
+    # ホスト部分が存在するか
+    host_part = parts[2]
+    if not host_part:
+        return False, "ホスト名が指定されていません"
+
+    return True, ""
+
+def test_camera_connection(camera_id):
+    """
+    指定されたカメラに接続テストを行う
+
+    Args:
+        camera_id (str): テストするカメラID
+
+    Returns:
+        bool: 接続成功したかどうか
+        str: エラーメッセージ（成功した場合は空文字）
+    """
+    try:
+        import ffmpeg_utils
+        
+        camera = get_camera_by_id(camera_id)
+        if not camera:
+            return False, f"カメラID {camera_id} の設定が見つかりません"
+        
+        rtsp_url = camera['rtsp_url']
+        valid, error_msg = validate_rtsp_url(rtsp_url)
+        if not valid:
+            return False, error_msg
+        
+        # RTSPストリームに接続テスト
+        success, error = ffmpeg_utils.check_rtsp_connection(rtsp_url)
+        if not success:
+            return False, f"接続テスト失敗: {error}"
+        
+        return True, ""
+        
     except Exception as e:
-        logging.error(f"Error formatting RTSP URL for camera {camera['id']}: {e}")
-        return camera['rtsp_url']  # エラー時は元のURLを返す
+        return False, f"接続テスト中にエラーが発生しました: {e}"
