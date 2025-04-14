@@ -93,9 +93,9 @@ a {
 .grid {
     display: flex;
     flex-wrap: wrap;
-    gap: 5px;
+    gap: 10px; /* ボタン間のスペースを少し広げる */
     justify-content: flex-start;
-    padding: 5px;
+    padding: 10px;
 }
 
 .camera {
@@ -104,12 +104,29 @@ a {
     padding: 10px;
     border-radius: 8px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    transition: transform 0.3s;  /* ホバー効果のためのトランジション */
+}
+
+.camera:hover {
+    transform: translateY(-5px);  /* ホバー時に少し浮き上がる効果 */
+    box-shadow: 0 5px 15px rgba(0,0,0,0.15);
 }
 
 .camera h4 {
     margin: 0 0 10px 0;
     font-size: 1.2em;
     color: #333;
+    text-align: center;
+    border-bottom: 1px solid #ddd;
+    padding-bottom: 5px;
+}
+
+.video-wrapper {
+    position: relative;
+    width: 100%;
+    background: #000;
+    border-radius: 4px;
+    overflow: hidden;
 }
 
 video {
@@ -121,111 +138,47 @@ video {
     object-fit: contain; /* 映像がはみ出さないように調整 */
 }
 
-.video-container {
-    position: relative;
-    width: 100%;
-    max-width: 1280px;
-    margin: 0 auto;
-}
-
-
-/* カメラグリッドのレイアウト */
-.camera-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-    gap: 20px;
-    padding: 20px;
-}
-
-.camera-container {
-    background: #f5f5f5;
-    border-radius: 8px;
-    padding: 10px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-.camera-title {
-    font-size: 16px;
-    margin-bottom: 10px;
-    padding: 5px;
-    background: #333;
-    color: white;
-    border-radius: 4px;
-}
-
-
-/* ビデオラッパーとステータス表示 */
-.video-wrapper {
-    position: relative;
-    width: 100%;
-    background: #000;
-}
-
-.status-indicator {
+.stream-status {
     position: absolute;
-    top: 10px;
-    right: 10px;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: #ccc;
+    bottom: 10px;
+    left: 10px;
+    background-color: rgba(0, 0, 0, 0.6);
+    color: white;
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    z-index: 10;
+    transition: all 0.3s;
 }
 
-.status-indicator.connected {
-    background: #4CAF50;
+.stream-status.connected {
+    background-color: rgba(76, 175, 80, 0.7);  /* 接続時は緑色 */
 }
 
-.status-indicator.error {
-    background: #f44336;
+.stream-status.error {
+    background-color: rgba(244, 67, 54, 0.7);  /* エラー時は赤色 */
 }
 
-.status-indicator.reconnecting {
-    background: #FFC107;
+.stream-status.reconnecting {
+    background-color: rgba(255, 193, 7, 0.7);  /* 再接続中は黄色 */
     animation: blink 1s infinite;
 }
 
-
-/* エラーオーバーレイ */
-.error-overlay {
-    display: none;
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    background: rgba(0,0,0,0.7);
-    color: white;
-    padding: 10px;
-    border-radius: 4px;
-    text-align: center;
-}
-
-
-/* ローディングスピナー */
-.loading-spinner {
-    display: none;
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    width: 40px;
-    height: 40px;
-    border: 4px solid #f3f3f3;
-    border-top: 4px solid #3498db;
-    border-radius: 50%;
-    animation: spin 1s linear infinite;
-}
-
-
-/* アニメーション */
 @keyframes blink {
-    50% { opacity: 0; }
+    50% { opacity: 0.5; }
 }
 
-@keyframes spin {
-    0% { transform: translate(-50%, -50%) rotate(0deg); }
-    100% { transform: translate(-50%, -50%) rotate(360deg); }
+/* レスポンシブデザイン調整 */
+@media (max-width: 768px) {
+    .grid {
+        justify-content: center;
+    }
+    
+    .camera {
+        width: 100%;
+        max-width: 480px;
+    }
 }
-
 
 button {
     margin: 10px;
@@ -244,6 +197,26 @@ button:hover {
     background-color: #0052a3;
 }
 
+.error-message {
+    grid-row: 3;
+    grid-column: 1 / 7;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    padding: 20px;
+    color: #721c24;
+    background-color: #f8d7da;
+    border: 1px solid #f5c6cb;
+    border-radius: 5px;
+    margin: 20px;
+    text-align: center;
+}
+
+.error-message h2 {
+    margin-bottom: 10px;
+    font-size: 1.5em;
+}
 
 h1, h2, h3, h4, h5, p, ul, ol, li, dl, dt, dd, form, figure, form { margin: 0px; padding: 0px; font-size: 100%; font-weight: normal; }
 
