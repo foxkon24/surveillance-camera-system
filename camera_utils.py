@@ -6,6 +6,8 @@ import os
 import logging
 from datetime import datetime
 import config
+import subprocess
+import json
 
 def read_config():
     """
@@ -15,20 +17,42 @@ def read_config():
         list: カメラ情報のリスト。各カメラは辞書形式。
     """
     try:
+        # 設定ファイルが存在するか確認
+        if not os.path.exists(config.CONFIG_PATH):
+            logging.error(f"設定ファイルが見つかりません: {config.CONFIG_PATH}")
+            return []
+            
         with open(config.CONFIG_PATH, 'r', encoding='utf-8') as file:
             cameras = []
 
             for line in file:
+                line = line.strip()
+                # 空行をスキップ
+                if not line or line.startswith('#'):
+                    continue
+                    
                 parts = line.strip().split(',')
 
                 # RTSPURLが空の場合はスキップ
                 if len(parts) >= 3 and parts[2].strip():
-                    cameras.append({
+                    camera = {
                         'id': parts[0],
                         'name': parts[1],
                         'rtsp_url': parts[2]
-                    })
+                    }
+                    
+                    # オプションの追加フィールドを処理
+                    if len(parts) > 3:
+                        for i in range(3, len(parts)):
+                            if '=' in parts[i]:
+                                key, value = parts[i].split('=', 1)
+                                camera[key.strip()] = value.strip()
+                    
+                    cameras.append(camera)
 
+            if not cameras:
+                logging.warning("有効なカメラ設定が見つかりません")
+                
             return cameras
 
     except Exception as e:
@@ -46,6 +70,11 @@ def read_config_names():
     try:
         with open(config.CONFIG_PATH, 'r', encoding='utf-8') as file:
             for line in file:
+                line = line.strip()
+                # 空行をスキップ
+                if not line or line.startswith('#'):
+                    continue
+                    
                 parts = line.strip().split(',')
                 if len(parts) >= 2:
                     camera_names[parts[0]] = parts[1]  # カメラIDと名前をマッピング
@@ -135,3 +164,84 @@ def get_camera_by_id(camera_id):
             return camera
 
     return None
+
+def test_rtsp_connection(rtsp_url, timeout=5):
+    """
+    RTSPストリームの接続をテストする
+
+    Args:
+        rtsp_url (str): テストするRTSP URL
+        timeout (int): タイムアウト秒数
+
+    Returns:
+        tuple: (成功したかどうか, エラーメッセージ)
+    """
+    try:
+        # FFprobeを使用してRTSPストリームをテスト
+        command = [
+            'ffprobe',
+            '-rtsp_transport', 'tcp',
+            '-v', 'error',
+            '-timeout', str(timeout * 1000000),  # マイクロ秒単位
+            '-i', rtsp_url,
+            '-show_entries', 'stream=codec_type',
+            '-of', 'json'
+        ]
+        
+        result = subprocess.run(command, capture_output=True, timeout=timeout+2)
+        
+        if result.returncode == 0:
+            # 成功
+            return (True, "Connection successful")
+        else:
+            # 失敗
+            error_output = result.stderr.decode('utf-8', errors='replace')
+            if "401 Unauthorized" in error_output:
+                return (False, "Authentication failed - incorrect username or password")
+            elif "Connection timed out" in error_output or "Operation timed out" in error_output:
+                return (False, "Connection timed out - check IP address and network")
+            else:
+                return (False, f"Connection failed: {error_output.strip()}")
+                
+    except subprocess.TimeoutExpired:
+        return (False, "Process timed out")
+    except Exception as e:
+        return (False, f"Error: {str(e)}")
+
+def get_rtsp_url_with_auth(camera):
+    """
+    認証情報を含むRTSP URLを安全に生成する
+
+    Args:
+        camera (dict): カメラ情報辞書
+
+    Returns:
+        str: 正規化されたRTSP URL
+    """
+    try:
+        # RTSPのURLパターンを解析
+        base_url = camera['rtsp_url']
+        
+        # すでに認証情報が含まれている場合はそのまま返す
+        if '@' in base_url and '://' in base_url:
+            return base_url
+        
+        # URLパターンが rtsp:// で始まることを確認
+        if not base_url.startswith('rtsp://'):
+            logging.warning(f"Invalid RTSP URL format for camera {camera['id']}: {base_url}")
+            return base_url
+        
+        # 認証情報がある場合は追加
+        if 'username' in camera and 'password' in camera:
+            # rtsp:// の後に認証情報を挿入
+            url_parts = base_url.split('://', 1)
+            if len(url_parts) == 2:
+                protocol, address = url_parts
+                auth_url = f"{protocol}://{camera['username']}:{camera['password']}@{address}"
+                return auth_url
+        
+        return base_url
+    
+    except Exception as e:
+        logging.error(f"Error formatting RTSP URL for camera {camera['id']}: {e}")
+        return camera['rtsp_url']  # エラー時は元のURLを返す

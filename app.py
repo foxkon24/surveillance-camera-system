@@ -6,6 +6,7 @@ import os
 import logging
 import sys
 import time
+import socket
 
 # 自作モジュールのインポート
 import config
@@ -35,6 +36,8 @@ def list_recordings():
             if os.path.isdir(camera_path):
                 mp4_files = [f for f in os.listdir(camera_path) if f.endswith('.mp4')]
                 if mp4_files:
+                    # 日付順に並べ替え
+                    mp4_files.sort(reverse=True)
                     recordings[camera_id] = mp4_files
 
         return render_template('recordings.html', recordings=recordings, camera_names=camera_names)
@@ -45,20 +48,32 @@ def list_recordings():
 
 @app.route('/system/cam/tmp/<camera_id>/<filename>')
 def serve_tmp_files(camera_id, filename):
-    """一時ファイル(HLS)を提供"""
+    """一時ファイル(HLS)を提供（改善版）"""
     try:
-        # パスを正規化
-        file_path = os.path.join(config.TMP_PATH, camera_id, filename).replace('/', '\\')
+        # パスを正規化（OS非依存）
+        file_path = os.path.normpath(os.path.join(config.TMP_PATH, camera_id, filename))
         directory = os.path.dirname(file_path)
 
+        # ファイルの存在チェックとログ
         if not os.path.exists(file_path):
+            logging.warning(f"File not found: {file_path}, requested by client")
             return "File not found", 404
+
+        # ファイルタイプに応じたMIMEタイプ設定
+        mimetype = None
+        if filename.endswith('.m3u8'):
+            mimetype = 'application/vnd.apple.mpegurl'
+        elif filename.endswith('.ts'):
+            mimetype = 'video/mp2t'
+
+        # ログを出力（デバッグ用）
+        logging.debug(f"Serving file: {file_path}, mimetype: {mimetype}")
 
         return send_from_directory(
             directory,
             os.path.basename(file_path),
             as_attachment=False,
-            mimetype = 'application/vnd.apple.mpegurl' if filename.endswith('.m3u8') else None)
+            mimetype=mimetype)
 
     except Exception as e:
         logging.error(f"Error serving file {filename} for camera {camera_id}: {e}")
@@ -67,12 +82,30 @@ def serve_tmp_files(camera_id, filename):
 @app.route('/system/cam/record/<camera_id>/<filename>')
 def serve_record_file(camera_id, filename):
     """録画ファイルを提供"""
-    return send_from_directory(os.path.join(config.RECORD_PATH, camera_id), filename)
+    try:
+        file_path = os.path.join(config.RECORD_PATH, camera_id, filename)
+        if not os.path.exists(file_path):
+            logging.warning(f"Record file not found: {file_path}")
+            return "File not found", 404
+            
+        return send_from_directory(os.path.join(config.RECORD_PATH, camera_id), filename)
+    except Exception as e:
+        logging.error(f"Error serving record file {filename} for camera {camera_id}: {e}")
+        return str(e), 500
 
 @app.route('/system/cam/backup/<camera_id>/<filename>')
 def serve_backup_file(camera_id, filename):
     """バックアップファイルを提供"""
-    return send_from_directory(os.path.join(config.BACKUP_PATH, camera_id), filename)
+    try:
+        file_path = os.path.join(config.BACKUP_PATH, camera_id, filename)
+        if not os.path.exists(file_path):
+            logging.warning(f"Backup file not found: {file_path}")
+            return "File not found", 404
+            
+        return send_from_directory(os.path.join(config.BACKUP_PATH, camera_id), filename)
+    except Exception as e:
+        logging.error(f"Error serving backup file {filename} for camera {camera_id}: {e}")
+        return str(e), 500
 
 @app.route('/start_recording', methods=['POST'])
 def start_recording_route():
@@ -129,6 +162,12 @@ def stop_all_recordings_route():
 def index():
     """メインページ"""
     cameras = camera_utils.read_config()
+    
+    # カメラが存在しない場合はエラーメッセージを表示
+    if not cameras:
+        return render_template('error.html', message="カメラ設定が読み込めませんでした。設定ファイルを確認してください。")
+    
+    # 各カメラのストリーミングを開始
     for camera in cameras:
         streaming.get_or_start_streaming(camera)
 
@@ -141,6 +180,12 @@ def index():
 def index_admin():
     """管理ページ"""
     cameras = camera_utils.read_config()
+    
+    # カメラが存在しない場合はエラーメッセージを表示
+    if not cameras:
+        return render_template('error.html', message="カメラ設定が読み込めませんでした。設定ファイルを確認してください。")
+    
+    # 各カメラのストリーミングを開始
     for camera in cameras:
         streaming.get_or_start_streaming(camera)
 
@@ -177,17 +222,40 @@ def backup_recordings():
 
     return render_template('backup_recordings.html', recordings=recordings, camera_names=camera_names)
 
+@app.route('/system/cam/status')
+def check_status():
+    """システム状態を確認するAPI"""
+    try:
+        status = {
+            "cameras": {},
+            "system": {
+                "disk_space": fs_utils.get_free_space(config.BASE_PATH) / (1024*1024*1024),  # GBに変換
+                "version": "1.1.0",  # システムバージョン
+                "uptime": "Running"
+            }
+        }
+        
+        # カメラの状態をチェック
+        cameras = camera_utils.read_config()
+        for camera in cameras:
+            camera_id = camera['id']
+            camera_status = {
+                "name": camera['name'],
+                "streaming": camera_id in streaming.streaming_processes,
+                "recording": camera_id in recording.recording_processes
+            }
+            status["cameras"][camera_id] = camera_status
+            
+        return jsonify(status)
+    except Exception as e:
+        logging.error(f"Error checking status: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 def initialize_app():
     """アプリケーション初期化"""
     try:
         # ロギングの設定
         config.setup_logging()
-
-        # ログの初期メッセージ
-        logging.info("============= アプリケーション起動 =============")
-        logging.info(f"実行パス: {os.getcwd()}")
-        logging.info(f"Pythonバージョン: {sys.version}")
-        logging.info(f"OSバージョン: {os.name}")
 
         # 基本ディレクトリの確認
         for directory in [config.BASE_PATH, config.TMP_PATH, config.RECORD_PATH, config.BACKUP_PATH]:
@@ -220,6 +288,19 @@ def initialize_app():
         logging.error(f"初期化エラー: {e}")
         return False
 
+def get_server_ip():
+    """サーバーのIPアドレスを取得"""
+    try:
+        # ソケットを作成してgoogleのDNSに接続
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        server_ip = s.getsockname()[0]
+        s.close()
+        return server_ip
+    except:
+        # 接続に失敗した場合は127.0.0.1を返す
+        return "127.0.0.1"
+
 if __name__ == '__main__':
     try:
         if not initialize_app():
@@ -231,6 +312,10 @@ if __name__ == '__main__':
         print(f"Base path: {config.BASE_PATH}")
         print(f"Config file path: {config.CONFIG_PATH}")
         print(f"Config file exists: {os.path.exists(config.CONFIG_PATH)}")
+        
+        # サーバーのIPアドレスを表示
+        server_ip = get_server_ip()
+        print(f"Server IP: http://{server_ip}:5000/system/cam/")
 
         app.run(host='0.0.0.0', port=5000, debug=False)
 

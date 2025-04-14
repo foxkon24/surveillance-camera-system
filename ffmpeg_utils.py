@@ -11,51 +11,6 @@ import re
 import os
 import threading
 
-def check_rtsp_connection(rtsp_url, timeout=10):
-    """
-    RTSP接続の可否をチェックする関数
-
-    Args:
-        rtsp_url (str): チェックするRTSP URL
-        timeout (int): タイムアウト秒数
-
-    Returns:
-        bool: 接続が成功したかどうか
-    """
-    try:
-        ffprobe_command = [
-            'ffprobe',
-            '-v', 'error',
-            '-rtsp_transport', 'tcp',
-            '-i', rtsp_url,
-            '-show_entries', 'format=duration',
-            '-of', 'default=noprint_wrappers=1:nokey=1',
-            '-read_intervals', '%+3'
-        ]
-
-        # タイムアウトを設定
-        result = subprocess.run(
-            ffprobe_command, 
-            timeout=timeout,
-            capture_output=True,
-            text=True
-        )
-
-        # 終了コードが0なら接続成功
-        if result.returncode == 0:
-            logging.info(f"RTSP connection successful: {rtsp_url}")
-            return True
-        else:
-            logging.warning(f"RTSP connection failed: {rtsp_url}, Error: {result.stderr}")
-            return False
-
-    except subprocess.TimeoutExpired:
-        logging.error(f"RTSP connection timeout: {rtsp_url}")
-        return False
-    except Exception as e:
-        logging.error(f"Error checking RTSP connection: {rtsp_url}, Error: {e}")
-        return False
-
 def kill_ffmpeg_processes(camera_id=None):
     """
     ffmpegプロセスを強制終了する関数
@@ -132,7 +87,12 @@ def check_audio_stream(rtsp_url):
             '-i', rtsp_url
         ]
 
-        result = subprocess.run(ffprobe_command, capture_output=True, text=True)
+        result = subprocess.run(ffprobe_command, capture_output=True, text=True, timeout=10)
+        
+        if result.returncode != 0:
+            logging.warning(f"Failed to probe RTSP stream: {rtsp_url}")
+            return False
+            
         stream_info = json.loads(result.stdout)
 
         # 音声ストリームの確認
@@ -228,6 +188,10 @@ def monitor_ffmpeg_output(process):
     Args:
         process (subprocess.Popen): 監視するFFmpegプロセス
     """
+    if not process or not process.stderr:
+        logging.warning("Cannot monitor FFmpeg output: invalid process or stderr stream")
+        return
+        
     while True:
         try:
             line = process.stderr.readline()
@@ -236,10 +200,15 @@ def monitor_ffmpeg_output(process):
 
             decoded_line = line.decode('utf-8', errors='replace').strip()
             if decoded_line:
-                logging.info(f"FFmpeg output: {decoded_line}")
-                # エラーメッセージを検出
-                if "Error" in decoded_line:
-                    logging.error(f"FFmpeg error detected: {decoded_line}")
+                # 重要なメッセージのみをログに記録
+                if "Error" in decoded_line or "error" in decoded_line:
+                    logging.error(f"FFmpeg error: {decoded_line}")
+                elif "warning" in decoded_line.lower():
+                    logging.warning(f"FFmpeg warning: {decoded_line}")
+                elif "failed" in decoded_line.lower():
+                    logging.warning(f"FFmpeg failure: {decoded_line}")
+                else:
+                    logging.debug(f"FFmpeg output: {decoded_line}")
 
         except Exception as e:
             logging.error(f"Error in FFmpeg output monitoring: {e}")
@@ -313,7 +282,7 @@ def terminate_process(process, timeout=5):
 
 def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, list_size=5):
     """
-    HLSストリーミング用のFFmpegコマンドを生成
+    HLSストリーミング用のFFmpegコマンドを生成（改善版）
 
     Args:
         rtsp_url (str): RTSPストリームURL
@@ -327,20 +296,25 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, 
     """
     return [
         'ffmpeg',
-        '-buffer_size', '10240k',    # バッファサイズを増加
+        '-rtsp_transport', 'tcp',             # TCPトランスポートを使用（より安定）
+        '-buffer_size', '10240k',             # バッファサイズを増加
         '-use_wallclock_as_timestamps', '1',
         '-i', rtsp_url,
         '-reset_timestamps', '1',
-        '-reconnect', '1',
+        '-reconnect', '1',                    # 接続が切れた場合に再接続を試みる
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '2',
-        '-thread_queue_size', '8192',  # スレッドキューサイズを増加
-        '-c:v', 'copy',
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-ar', '44100',
-        '-ac', '2',
+        '-reconnect_delay_max', '5',          # 最大再接続遅延を5秒に増加
+        '-timeout', '10000000',               # タイムアウト値を増加
+        '-rw_timeout', '10000000',            # 読み書きタイムアウト値を増加
+        '-stimeout', '10000000',              # ソケットタイムアウト値を増加
+        '-thread_queue_size', '8192',         # スレッドキューサイズを増やす
+        '-c:v', 'copy',                       # ビデオコーデックをそのままコピー
+        '-c:a', 'aac',                        # 音声コーデックをAACに設定
+        '-b:a', '128k',                       # 音声ビットレート
+        '-ar', '44100',                       # サンプリングレート
+        '-ac', '2',                           # ステレオ音声
+        '-f', 'hls',                          # HLS形式を明示的に指定
         f'-hls_time', str(segment_time),
         f'-hls_list_size', str(list_size),
         '-hls_flags', 'delete_segments+append_list+program_date_time+independent_segments',
@@ -352,7 +326,7 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, 
 
 def get_ffmpeg_record_command(rtsp_url, output_path):
     """
-    録画用のFFmpegコマンドを生成
+    録画用のFFmpegコマンドを生成（改善版）
 
     Args:
         rtsp_url (str): RTSPストリームURL
@@ -370,8 +344,11 @@ def get_ffmpeg_record_command(rtsp_url, output_path):
         '-reconnect', '1',                    # 接続が切れた場合に再接続を試みる
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '2',          # 最大再接続遅延を2秒に設定
-        '-thread_queue_size', '1024',         # 入力バッファサイズを増やす
+        '-reconnect_delay_max', '5',          # 最大再接続遅延を5秒に設定
+        '-timeout', '10000000',               # タイムアウト値を増加
+        '-rw_timeout', '10000000',            # 読み書きタイムアウト値を増加
+        '-stimeout', '10000000',              # ソケットタイムアウト値を増加
+        '-thread_queue_size', '8192',         # 入力バッファサイズを増やす
         '-analyzeduration', '2147483647',     # 入力ストリームの分析時間を延長
         '-probesize', '2147483647',           # プローブサイズを増やす
         '-c:v', 'copy',                       # ビデオコーデックをそのままコピー
