@@ -1,7 +1,7 @@
 """
 監視カメラシステム メインアプリケーション
 """
-from flask import Flask, render_template, send_from_directory, request, jsonify, make_response
+from flask import Flask, render_template, send_from_directory, request, jsonify
 import os
 import logging
 import sys
@@ -52,25 +52,13 @@ def serve_tmp_files(camera_id, filename):
         directory = os.path.dirname(file_path)
 
         if not os.path.exists(file_path):
-            logging.warning(f"File not found: {file_path}, requested by client")
             return "File not found", 404
 
-        # CORS対応を追加（クロスドメインアクセスを許可）
-        response = make_response(send_from_directory(
+        return send_from_directory(
             directory,
             os.path.basename(file_path),
             as_attachment=False,
-            mimetype='application/vnd.apple.mpegurl' if filename.endswith('.m3u8') else None))
-        
-        # キャッシュを無効化
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
-        
-        # CORS対応
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        
-        return response
+            mimetype = 'application/vnd.apple.mpegurl' if filename.endswith('.m3u8') else None)
 
     except Exception as e:
         logging.error(f"Error serving file {filename} for camera {camera_id}: {e}")
@@ -141,17 +129,16 @@ def stop_all_recordings_route():
 def index():
     """メインページ"""
     cameras = camera_utils.read_config()
-    # ストリーミングの初期化
     for camera in cameras:
         streaming.get_or_start_streaming(camera)
 
     # ストリームの初期化を待つ
     time.sleep(1)
 
-    # 各カメラのストリーミング状態を取得
+    # カメラのストリーミング状態を取得
     stream_status = streaming.get_camera_streaming_status()
-    
-    return render_template('index.html', cameras=cameras, stream_status=stream_status)
+
+    return render_template('index.html', cameras=cameras)
 
 @app.route('/system/cam/admin/')
 def index_admin():
@@ -193,66 +180,18 @@ def backup_recordings():
 
     return render_template('backup_recordings.html', recordings=recordings, camera_names=camera_names)
 
-@app.route('/api/status')
-def get_status():
-    """システム状態を取得するAPI"""
-    try:
-        # カメラ情報を取得
-        cameras = camera_utils.read_config()
-        # ストリーミング状態を取得
-        stream_status = streaming.get_camera_streaming_status()
-        
-        # レスポンス形式の構築
-        status_info = {
-            "cameras": [],
-            "system": {
-                "uptime": get_uptime(),
-                "ffmpeg_version": get_ffmpeg_version()
-            }
-        }
-        
-        # カメラごとの状態情報
-        for camera in cameras:
-            camera_id = camera['id']
-            camera_info = {
-                "id": camera_id,
-                "name": camera['name'],
-                "status": stream_status.get(camera_id, "unknown")
-            }
-            status_info["cameras"].append(camera_info)
-        
-        return jsonify(status_info)
-        
-    except Exception as e:
-        logging.error(f"Error getting system status: {e}")
-        return jsonify({"error": str(e)}), 500
-
-def get_uptime():
-    """システムの稼働時間を取得"""
-    try:
-        import psutil
-        uptime_seconds = time.time() - psutil.boot_time()
-        return int(uptime_seconds)
-    except:
-        return 0
-
-def get_ffmpeg_version():
-    """FFmpegのバージョン情報を取得"""
-    try:
-        import subprocess
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
-        if result.returncode == 0:
-            # 最初の行だけ返す
-            return result.stdout.split('\n')[0]
-        return "Unknown"
-    except:
-        return "Error getting FFmpeg version"
-
 def initialize_app():
     """アプリケーション初期化"""
     try:
         # ロギングの設定
         config.setup_logging()
+
+        # プロセスIDをログに出力
+        logging.info(f"Process ID: {os.getpid()}")
+        logging.info("============= アプリケーション起動 =============")
+        logging.info(f"実行パス: {os.getcwd()}")
+        logging.info(f"Pythonバージョン: {sys.version}")
+        logging.info(f"OSバージョン: {os.name}")
 
         # 基本ディレクトリの確認
         for directory in [config.BASE_PATH, config.TMP_PATH, config.RECORD_PATH, config.BACKUP_PATH]:
@@ -267,6 +206,8 @@ def initialize_app():
         cameras = camera_utils.read_config()
         if not cameras:
             logging.warning("有効なカメラ設定が見つかりません")
+        else:
+            logging.info(f"{len(cameras)} 台のカメラ設定を読み込みました")
 
         # ストリーミングシステムの初期化
         streaming.initialize_streaming()
@@ -279,9 +220,16 @@ def initialize_app():
             logging.error("FFmpegが見つかりません")
             return False
 
-        # サーバーIPアドレスの表示
-        server_ip = config.get_server_ip()
-        logging.info(f"Server IP: http://{server_ip}:5000/system/cam/")
+        # サーバーIPアドレスを取得して表示
+        try:
+            import socket
+            hostname = socket.gethostname()
+            ip_address = socket.gethostbyname(hostname)
+            server_url = f"http://{ip_address}:5000/system/cam/"
+            logging.info(f"Server IP: {server_url}")
+            print(f"Server IP: {server_url}")
+        except Exception as e:
+            logging.warning(f"Failed to get server IP: {e}")
 
         return True
 
@@ -291,6 +239,13 @@ def initialize_app():
 
 if __name__ == '__main__':
     try:
+        # 管理者権限の確認
+        import ctypes
+        if ctypes.windll.shell32.IsUserAnAdmin():
+            print("Running with administrative privileges.")
+        else:
+            print("Warning: Not running with administrative privileges.")
+
         if not initialize_app():
             print("アプリケーションの初期化に失敗しました。ログを確認してください。")
             sys.exit(1)
@@ -300,9 +255,8 @@ if __name__ == '__main__':
         print(f"Base path: {config.BASE_PATH}")
         print(f"Config file path: {config.CONFIG_PATH}")
         print(f"Config file exists: {os.path.exists(config.CONFIG_PATH)}")
-        print(f"Server IP: http://{config.get_server_ip()}:5000/system/cam/")
 
-        app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+        app.run(host='0.0.0.0', port=5000, debug=False)
 
     except Exception as e:
         logging.error(f"Startup error: {e}")

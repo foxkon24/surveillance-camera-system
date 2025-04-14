@@ -25,6 +25,21 @@ HEALTH_CHECK_INTERVAL = 15
 # ファイル更新タイムアウト（秒）- この時間以上更新がない場合は問題と判断
 HLS_UPDATE_TIMEOUT = 30
 
+def get_camera_streaming_status():
+    """
+    各カメラのストリーミング状態を取得
+
+    Returns:
+        dict: カメラIDをキー、ストリーミング状態を値とする辞書
+    """
+    status = {}
+    for camera_id, process in streaming_processes.items():
+        if process and process.poll() is None:
+            status[camera_id] = "running"
+        else:
+            status[camera_id] = "stopped"
+    return status
+
 def get_or_start_streaming(camera):
     """
     既存のストリーミングプロセスを取得するか、新しく開始する
@@ -59,6 +74,9 @@ def get_or_start_streaming(camera):
                 hls_path,
                 segment_path
             )
+
+            # FFmpegコマンドを記録
+            logging.info(f"Starting FFmpeg with command: {' '.join(ffmpeg_command)}")
 
             # プロセス起動
             process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command, log_path=log_path)
@@ -218,6 +236,9 @@ def monitor_streaming_process(camera_id, process):
         try:
             # プロセスが終了しているか確認
             if process.poll() is not None:
+                exit_code = process.poll()
+                logging.error(f"FFmpeg process exited with code: {exit_code}")
+                
                 consecutive_failures += 1
                 current_delay = min(retry_delay * consecutive_failures, max_retry_delay)
 
