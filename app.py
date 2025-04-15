@@ -47,18 +47,25 @@ def list_recordings():
 def serve_tmp_files(camera_id, filename):
     """一時ファイル(HLS)を提供"""
     try:
-        # パスを正規化
-        file_path = os.path.join(config.TMP_PATH, camera_id, filename).replace('/', '\\')
-        directory = os.path.dirname(file_path)
+        # 正しいパス形式を使用（置換なし）
+        directory = os.path.join(config.TMP_PATH, camera_id)
+        file_path = os.path.join(directory, filename)
 
         if not os.path.exists(file_path):
+            logging.warning(f"HLS file not found: {file_path}")
             return "File not found", 404
+
+        mimetype = None
+        if filename.endswith('.m3u8'):
+            mimetype = 'application/vnd.apple.mpegurl'
+        elif filename.endswith('.ts'):
+            mimetype = 'video/mp2t'
 
         return send_from_directory(
             directory,
-            os.path.basename(file_path),
+            filename,
             as_attachment=False,
-            mimetype = 'application/vnd.apple.mpegurl' if filename.endswith('.m3u8') else None)
+            mimetype=mimetype)
 
     except Exception as e:
         logging.error(f"Error serving file {filename} for camera {camera_id}: {e}")
@@ -129,15 +136,11 @@ def stop_all_recordings_route():
 def index():
     """メインページ"""
     cameras = camera_utils.read_config()
-    
-    # カメラ毎のストリーミング初期化を順次実行（並列処理避け）
     for camera in cameras:
-        try:
-            streaming.get_or_start_streaming(camera)
-            # ストリームの初期化を待つ
-            time.sleep(2)
-        except Exception as e:
-            logging.error(f"Error initializing stream for camera {camera['id']}: {e}")
+        streaming.get_or_start_streaming(camera)
+
+    # ストリームの初期化を待つ - 増加
+    time.sleep(3)
 
     return render_template('index.html', cameras=cameras)
 
@@ -145,15 +148,11 @@ def index():
 def index_admin():
     """管理ページ"""
     cameras = camera_utils.read_config()
-    
-    # カメラ毎のストリーミング初期化を順次実行（並列処理避け）
     for camera in cameras:
-        try:
-            streaming.get_or_start_streaming(camera)
-            # ストリームの初期化を待つ
-            time.sleep(2)
-        except Exception as e:
-            logging.error(f"Error initializing stream for camera {camera['id']}: {e}")
+        streaming.get_or_start_streaming(camera)
+
+    # ストリームの初期化を待つ - 増加
+    time.sleep(3)
 
     return render_template('admin.html', cameras=cameras)
 
@@ -170,12 +169,10 @@ def index_single():
     if target_camera is None:
         return 'Camera not found', 404
 
-    try:
-        streaming.get_or_start_streaming(target_camera)
-        # ストリームの初期化を待つ
-        time.sleep(2)
-    except Exception as e:
-        logging.error(f"Error initializing stream for camera {camera_id}: {e}")
+    streaming.get_or_start_streaming(target_camera)
+
+    # ストリームの初期化を待つ - 増加
+    time.sleep(3)
 
     return render_template('single.html', camera=target_camera)
 
