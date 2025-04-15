@@ -21,9 +21,9 @@ hls_last_update = {}
 # m3u8ファイルの前回のサイズを追跡
 m3u8_last_size = {}
 # 健全性チェックの間隔（秒）
-HEALTH_CHECK_INTERVAL = 15
+HEALTH_CHECK_INTERVAL = 10  # より頻繁に確認
 # ファイル更新タイムアウト（秒）- この時間以上更新がない場合は問題と判断
-HLS_UPDATE_TIMEOUT = 45  # タイムアウト値を増加
+HLS_UPDATE_TIMEOUT = 30  # タイムアウト値を最適化
 # カメラの接続状態を追跡
 camera_connection_status = {}  # 0=未接続, 1=接続中, 2=エラー
 # カメラごとの最後の接続試行時間
@@ -33,8 +33,12 @@ connection_error_counts = {}
 # 最大エラー回数（これを超えるとより長い待機時間になる）
 MAX_ERROR_COUNT = 3
 # 最小再試行遅延と最大再試行遅延
-MIN_RETRY_DELAY = 30
-MAX_RETRY_DELAY = 300
+MIN_RETRY_DELAY = 20  # 短くして素早く再試行
+MAX_RETRY_DELAY = 180  # 最大遅延は長めに設定
+# HLSファイルチェックの最大試行回数
+MAX_HLS_CHECK_ATTEMPTS = 15  # 増加
+# ストリーミング開始時の初期化待機時間（秒）
+STREAM_INIT_WAIT = 5  # 少し長く待機
 
 def get_or_start_streaming(camera):
     """
@@ -81,6 +85,8 @@ def get_or_start_streaming(camera):
                 # プロセスが終了している場合は再起動
                 logging.info(f"Streaming process for camera {camera_id} is not running, restarting")
                 stop_streaming(camera_id)
+                # プロセスが完全に終了するのを待つ
+                time.sleep(2)
 
         # 一時ディレクトリの確認と作成
         camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
@@ -113,7 +119,8 @@ def get_or_start_streaming(camera):
 
         # 既存のffmpegプロセスが残っている場合、強制終了
         ffmpeg_utils.kill_ffmpeg_processes(camera_id)
-        time.sleep(1)  # プロセス終了待ち
+        # プロセス終了を待つ - 時間を増加
+        time.sleep(2)  
 
         # RTSPストリームの接続確認
         logging.info(f"Checking RTSP connection for camera {camera_id}: {camera['rtsp_url']}")
@@ -139,11 +146,12 @@ def get_or_start_streaming(camera):
         segment_filename = f"{camera_id}_%03d.ts"
         
         # HLSストリーミング用FFmpegコマンド生成
+        # セグメント時間を2秒に短縮、リスト長を10に増加
         ffmpeg_command = ffmpeg_utils.get_ffmpeg_hls_command(
             camera['rtsp_url'], 
             hls_path,
             segment_filename,
-            segment_time=5,  # セグメント長を短くして応答性を改善
+            segment_time=2,  # セグメント長を短くして応答性を改善
             list_size=10     # リスト長を増やして安定性を向上
         )
         
@@ -187,14 +195,18 @@ def get_or_start_streaming(camera):
         )
         hls_monitor_thread.start()
 
-        # 数秒待ってHLSファイルが作成されたか確認
-        time.sleep(2)
-        if os.path.exists(hls_path):
-            logging.info(f"HLS file created successfully: {hls_path}")
-            return True
-        else:
-            logging.warning(f"HLS file not created yet: {hls_path}, but process is running")
-            return True  # プロセスは開始されているのでTrueを返す
+        # HLSファイルが作成されるまで少し長く待機（5秒）
+        wait_count = 0
+        max_wait = STREAM_INIT_WAIT  # 5秒
+        while wait_count < max_wait:
+            if os.path.exists(hls_path) and os.path.getsize(hls_path) > 0:
+                logging.info(f"HLS file created successfully: {hls_path}")
+                return True
+            wait_count += 1
+            time.sleep(1)
+            
+        logging.warning(f"HLS file not created yet after {max_wait}s wait: {hls_path}, but process is running")
+        return True  # プロセスは開始されているのでTrueを返す
 
     except Exception as e:
         logging.error(f"Error starting streaming for camera {camera_id}: {e}")
@@ -257,12 +269,19 @@ def restart_streaming(camera_id):
         # 既存のストリーミングを停止
         stop_streaming(camera_id)
         
-        # 短い待機時間
-        time.sleep(2)
+        # 短い待機時間を増加 - プロセスが完全に終了するのを待つ
+        time.sleep(3)
+        
+        # 念のため最後にクリーンアップ
+        ffmpeg_utils.kill_ffmpeg_processes(camera_id)
         
         # カメラ設定を読み込んでストリーミングを再開
         camera = camera_utils.get_camera_by_id(camera_id)
         if camera:
+            # 最終接続試行時間をリセットして強制的に接続
+            if camera_id in last_connection_attempt:
+                del last_connection_attempt[camera_id]
+                
             success = get_or_start_streaming(camera)
             if success:
                 logging.info(f"Successfully restarted streaming for camera {camera_id}")
@@ -294,10 +313,10 @@ def monitor_hls_updates(camera_id):
     
     # 最初のHLSファイル生成を待つ
     wait_count = 0
-    max_wait = 30  # 最大30回 (30 * 2秒 = 60秒) 待つ
+    max_wait = MAX_HLS_CHECK_ATTEMPTS  # 最大待機回数を増加（15 * 2秒 = 30秒）
     
     while wait_count < max_wait:
-        if os.path.exists(hls_path):
+        if os.path.exists(hls_path) and os.path.getsize(hls_path) > 0:
             logging.info(f"HLS file created for camera {camera_id} after {wait_count * 2} seconds")
             break
         
@@ -309,7 +328,7 @@ def monitor_hls_updates(camera_id):
             logging.warning(f"Streaming process for camera {camera_id} no longer exists during initial wait")
             return
     
-    if wait_count >= max_wait and not os.path.exists(hls_path):
+    if wait_count >= max_wait and (not os.path.exists(hls_path) or os.path.getsize(hls_path) == 0):
         logging.error(f"HLS file not created for camera {camera_id} after {max_wait * 2} seconds, restarting")
         restart_streaming(camera_id)
         return
@@ -379,6 +398,8 @@ def monitor_hls_updates(camera_id):
                 
                 if failures >= max_failures:
                     logging.error(f"HLS update timeout detected for camera {camera_id}. Restarting streaming.")
+                    # より強力なクリーンアップを実施
+                    cleanup_camera_resources(camera_id)
                     restart_streaming(camera_id)
                     failures = 0
                     
@@ -432,6 +453,10 @@ def monitor_streaming_process(camera_id, process):
                 # カメラ設定を読み込んでストリーミングを再開
                 camera = camera_utils.get_camera_by_id(camera_id)
                 if camera:
+                    # 最終接続試行時間をリセットして強制的に接続
+                    if camera_id in last_connection_attempt:
+                        del last_connection_attempt[camera_id]
+                        
                     success = get_or_start_streaming(camera)
                     if success:
                         consecutive_failures = 0
@@ -458,6 +483,17 @@ def cleanup_camera_resources(camera_id):
         camera_id (str): クリーンアップするカメラID
     """
     try:
+        # まずプロセスを終了
+        if camera_id in streaming_processes and streaming_processes[camera_id]:
+            process = streaming_processes[camera_id].get('process')
+            if process:
+                ffmpeg_utils.terminate_process(process)
+                logging.info(f"Terminated process for camera {camera_id} during cleanup")
+        
+        # 念のため強制終了
+        ffmpeg_utils.kill_ffmpeg_processes(camera_id)
+        
+        # 一時ディレクトリのファイルを削除
         camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
         if os.path.exists(camera_tmp_dir):
             for file in os.listdir(camera_tmp_dir):
@@ -465,8 +501,19 @@ def cleanup_camera_resources(camera_id):
                     file_path = os.path.join(camera_tmp_dir, file)
                     if os.path.isfile(file_path):
                         os.remove(file_path)
+                        logging.debug(f"Removed file during cleanup: {file_path}")
                 except Exception as e:
                     logging.error(f"Error removing file {file}: {e}")
+
+        # 状態変数をクリア
+        if camera_id in streaming_processes:
+            streaming_processes[camera_id] = None
+        if camera_id in hls_last_update:
+            del hls_last_update[camera_id]
+        if camera_id in m3u8_last_size:
+            del m3u8_last_size[camera_id]
+                            
+        logging.info(f"Completed cleanup for camera {camera_id}")
 
     except Exception as e:
         logging.error(f"Error in cleanup_camera_resources for camera {camera_id}: {e}")
@@ -508,12 +555,12 @@ def cleanup_old_segments(camera_id):
                     try:
                         # ファイルが以下の条件を満たす場合に削除:
                         # 1. プレイリストに含まれていない
-                        # 2. 作成から60秒以上経過している
+                        # 2. 作成から30秒以上経過している (60秒→30秒に短縮)
                         if (file not in active_segments and 
                             os.path.exists(file_path) and 
-                            current_time - os.path.getctime(file_path) > 60):
+                            current_time - os.path.getctime(file_path) > 30):
                             os.remove(file_path)
-                            logging.info(f"Removed old segment file: {file}")
+                            logging.debug(f"Removed old segment file: {file}")
                     except Exception as e:
                         logging.error(f"Error removing file {file}: {e}")
         except Exception as e:
@@ -539,7 +586,7 @@ def cleanup_scheduler():
         except Exception as e:
             logging.error(f"Error in cleanup_scheduler: {e}")
 
-        time.sleep(30)  # 30秒ごとに実行（より頻繁に）
+        time.sleep(20)  # 30秒→20秒に短縮
 
 def stop_all_streaming():
     """
