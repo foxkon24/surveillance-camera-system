@@ -11,7 +11,7 @@ import re
 import os
 import threading
 
-def check_rtsp_connection(rtsp_url, timeout=15):
+def check_rtsp_connection(rtsp_url, timeout=10):
     """
     RTSP接続の可否をチェックする関数
 
@@ -192,6 +192,9 @@ def start_ffmpeg_process(command, log_path=None, high_priority=True):
         subprocess.Popen: 生成されたプロセスオブジェクト
     """
     try:
+        # コマンドラインをログに記録（デバッグ用）
+        logging.info(f"FFmpeg command: {' '.join(command)}")
+        
         creation_flags = subprocess.CREATE_NO_WINDOW
         if high_priority:
             creation_flags |= subprocess.HIGH_PRIORITY_CLASS
@@ -245,7 +248,7 @@ def monitor_ffmpeg_output(process):
             logging.error(f"Error in FFmpeg output monitoring: {e}")
             break
 
-def terminate_process(process, timeout=10):
+def terminate_process(process, timeout=5):
     """
     プロセスを適切に終了させる
 
@@ -268,7 +271,7 @@ def terminate_process(process, timeout=10):
                 logging.error(f"Error sending q command: {e}")
 
         # 少し待ってからプロセスの状態を確認
-        time.sleep(3)  # 長めの待機時間
+        time.sleep(2)
 
         # プロセスがまだ実行中なら、taskkillを使用
         if process.poll() is None:
@@ -311,7 +314,7 @@ def terminate_process(process, timeout=10):
     except Exception as e:
         logging.error(f"Error terminating process: {e}")
 
-def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=4, list_size=10):
+def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, list_size=5):
     """
     HLSストリーミング用のFFmpegコマンドを生成
 
@@ -327,20 +330,16 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=4, 
     """
     return [
         'ffmpeg',
-        '-buffer_size', '20480k',    # バッファサイズを増加
-        '-analyzeduration', '10000000',  # 分析時間を増加
-        '-probesize', '10000000',       # プローブサイズを増加
+        '-rtsp_transport', 'tcp',         # TCPトランスポートを明示的に指定
+        '-buffer_size', '8192k',          # バッファサイズを調整
         '-use_wallclock_as_timestamps', '1',
-        '-rtsp_transport', 'tcp',      # RTSPトランスポートをTCPに固定
         '-i', rtsp_url,
         '-reset_timestamps', '1',
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',    # 再接続遅延を増加
-        '-stimeout', '20000000',        # ストリーミングタイムアウトを増加
-        '-thread_queue_size', '16384',  # スレッドキューサイズを増加
-        '-max_delay', '5000000',        # 最大遅延を増加
+        '-reconnect_delay_max', '2',
+        '-thread_queue_size', '4096',     # スレッドキューサイズを調整
         '-c:v', 'copy',
         '-c:a', 'aac',
         '-b:a', '128k',
@@ -351,8 +350,6 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=4, 
         '-hls_flags', 'delete_segments+append_list+program_date_time+independent_segments',
         '-hls_segment_type', 'mpegts',
         '-hls_allow_cache', '1',
-        '-timeout', '5',                # 接続タイムアウトを設定
-        '-hls_init_time', '0',          # 初期化時間を0に設定
         '-hls_segment_filename', segment_path,
         output_path
     ]
