@@ -7,29 +7,50 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.18/hls.js"></script>
     <title>監視カメラシステム</title>
     <script>
-        // 15分間隔でページを自動更新する関数
+        // 10分間隔でページを自動更新する関数
         function setupAutoRefresh() {
             setInterval(function() {
-                // アクティブなビデオストリームがある場合は更新をスキップ
-                const videos = document.getElementsByTagName('video');
-                let activeStreams = false;
-
-                for (let video of videos) {
-                    if (!video.paused && video.readyState > 2) {
-                        activeStreams = true;
-                        break;
-                    }
-                }
-
-                if (!activeStreams) {
+                // ユーザーが操作しているかどうかを確認
+                const userActivity = sessionStorage.getItem('userActivity');
+                const now = Date.now();
+                
+                // 最後のユーザー操作から3分以上経過している場合のみリロード
+                if (!userActivity || (now - userActivity > 180000)) {
                     location.reload();
                 }
-            }, 900000); // 15分 = 900000ミリ秒
+            }, 600000); // 10分 = 600000ミリ秒
         }
 
-        // ページ読み込み完了時に自動更新を設定
+        // ユーザーの操作を検知する
+        function detectUserActivity() {
+            document.addEventListener('click', updateUserActivity);
+            document.addEventListener('keypress', updateUserActivity);
+            document.addEventListener('scroll', updateUserActivity);
+            document.addEventListener('mousemove', throttle(updateUserActivity, 60000)); // 1分間隔で更新
+        }
+
+        // ユーザーアクティビティタイムスタンプを更新
+        function updateUserActivity() {
+            sessionStorage.setItem('userActivity', Date.now());
+        }
+
+        // スロットル関数（高頻度イベントの制限）
+        function throttle(func, delay) {
+            let lastCall = 0;
+            return function() {
+                const now = Date.now();
+                if (now - lastCall >= delay) {
+                    lastCall = now;
+                    return func.apply(this, arguments);
+                }
+            };
+        }
+
+        // ページ読み込み完了時に自動更新とユーザー操作検知を設定
         window.addEventListener('load', function() {
             setupAutoRefresh();
+            detectUserActivity();
+            updateUserActivity(); // 初期値を設定
         });
     </script>
 </head>
@@ -62,36 +83,84 @@
         const players = {};
         const retryAttempts = {};
         const streamTimestamps = {};  // ストリームデータの最終受信時間を追跡
-        const MAX_RETRY_ATTEMPTS = 10;  // 増加
-        const RETRY_DELAY = 5000;  // 増加
-        const STREAM_CHECK_INTERVAL = 20000;  // 増加
-        const STREAM_STALL_TIMEOUT = 45000;  // 増加
+        const streamErrors = {};      // エラー回数を追跡
+        const lastPlayTime = {};      // 最後に再生していた時間を追跡
+        const MAX_RETRY_ATTEMPTS = 3;
+        const RETRY_DELAY = 2000;
+        const STREAM_CHECK_INTERVAL = 5000;  // 5秒ごとにストリームをチェック
+        const STREAM_STALL_TIMEOUT = 10000;  // 10秒間データが来なければ停止とみなす
+        let pageActive = true;        // ページがアクティブかどうか
 
         function updateStreamStatus(cameraId, status) {
             const statusElement = document.getElementById('status' + cameraId);
             if (statusElement) {
                 statusElement.textContent = status;
+                
+                // ステータスに応じて表示スタイルを変更
+                if (status === '接続済') {
+                    statusElement.style.color = 'green';
+                } else if (status === 'エラー発生' || status.includes('再読み込み')) {
+                    statusElement.style.color = 'red';
+                } else if (status === 'バッファリング中...' || status.includes('再接続')) {
+                    statusElement.style.color = 'orange';
+                } else {
+                    statusElement.style.color = 'gray';
+                }
             }
         }
 
         function reloadStream(cameraId) {
+            if (streamErrors[cameraId] >= 3) {
+                // エラーが多すぎる場合、より長い待機時間を設ける
+                const currentTime = Date.now();
+                const lastErrorTime = streamErrors[cameraId + '_time'] || 0;
+                
+                if (currentTime - lastErrorTime < 30000) { // 30秒以内に再試行済み
+                    updateStreamStatus(cameraId, '接続エラー - 後で再試行します');
+                    console.log(`Too many errors for camera ${cameraId}, will retry later`);
+                    
+                    // 1分後に自動リトライ
+                    setTimeout(() => {
+                        streamErrors[cameraId] = 0;
+                        initializePlayer(cameraId);
+                    }, 60000);
+                    
+                    return;
+                }
+                
+                // 30秒以上経過していれば再試行
+                streamErrors[cameraId] = 0;
+            }
+            
+            // エラー回数記録
+            streamErrors[cameraId] = (streamErrors[cameraId] || 0) + 1;
+            streamErrors[cameraId + '_time'] = Date.now();
+            
             console.log(`Reloading stream for camera ${cameraId}`);
             updateStreamStatus(cameraId, '再読み込み中...');
             
             if (players[cameraId]) {
                 players[cameraId].destroy();
+                players[cameraId] = null;
             }
             
             // 少し待ってから再初期化
-            setTimeout(() => initializePlayer(cameraId), 3000);
+            setTimeout(() => initializePlayer(cameraId), RETRY_DELAY);
         }
 
         function initializePlayer(cameraId) {
             const video = document.getElementById('video' + cameraId);
+            if (!video) return;
+            
             const filePath = '/system/cam/tmp/' + cameraId + '/' + cameraId + '.m3u8';
 
             if (players[cameraId]) {
-                players[cameraId].destroy();
+                try {
+                    players[cameraId].destroy();
+                } catch (e) {
+                    console.log(`Error destroying player for camera ${cameraId}:`, e);
+                }
+                players[cameraId] = null;
             }
 
             retryAttempts[cameraId] = 0;
@@ -103,66 +172,33 @@
                     debug: false,
                     enableWorker: true,
                     lowLatencyMode: true,
-                    backBufferLength: 60,  // 増加
-                    maxBufferLength: 30,  // 増加
-                    maxMaxBufferLength: 60,  // 増加
-                    manifestLoadingTimeOut: 20000,  // 増加
-                    manifestLoadingMaxRetry: 5,  // 増加
-                    levelLoadingTimeOut: 20000,  // 増加
-                    levelLoadingMaxRetry: 5,  // 増加
-                    fragLoadingTimeOut: 20000,  // 増加
-                    fragLoadingMaxRetry: 5,  // 増加
-                    
+                    backBufferLength: 10,    // バックバッファを減らす
+                    maxBufferLength: 5,      // バッファ長を短くして遅延を減らす
+                    maxMaxBufferLength: 10,  // 最大バッファ長も短く
+                    manifestLoadingTimeOut: 5000,   // タイムアウトも短く
+                    manifestLoadingMaxRetry: 2,     // リトライ回数を減らす
+                    levelLoadingTimeOut: 5000,
+                    levelLoadingMaxRetry: 2,
+                    fragLoadingTimeOut: 5000,
+                    fragLoadingMaxRetry: 2,
                     // 追加のオプション
-                    liveSyncDuration: 3,    // ライブ同期時間（秒）
-                    liveMaxLatencyDuration: 10,  // 最大遅延許容値
-                    liveDurationInfinity: true,  // 無限ライブ再生
-                    enableStashBuffer: true,     // スタッシュバッファを有効化
-                    
-                    // キャッシュ関連設定
-                    appendErrorMaxRetry: 5,       // 追加エラー時の最大再試行
-                    startLevel: -1,              // 自動選択(-1)
+                    capLevelToPlayerSize: true,     // プレイヤーサイズに合わせてレベルを制限
+                    startLevel: -1,                 // 自動選択(-1)
                     defaultAudioCodec: 'mp4a.40.2', // 標準的なAACコーデック指定
-                    progressive: false,          // 通常のHLSストリーミング
-                    
-                    // XHRリクエスト設定
+                    progressive: false,             // 通常のHLSストリーミング
+                    maxBufferHole: 0.5,             // バッファホールの最大サイズを小さく
+                    highBufferWatchdogPeriod: 2,    // 高バッファウォッチドッグの期間を短く
+                    nudgeMaxRetry: 5,               // 最大ヌッジリトライ回数
                     xhrSetup: function(xhr) {
-                        xhr.timeout = 30000;  // XHRタイムアウトを30秒に設定
                         xhr.addEventListener('error', function() {
-                            console.log('xhr error occurred');
+                            console.log(`Camera ${cameraId} xhr error occurred`);
                         });
                     }
                 });
 
                 players[cameraId] = hls;
-
-                hls.loadSource(filePath);
-                hls.attachMedia(video);
-
-                hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                    video.play().catch(function(error) {
-                        console.log(`Camera ${cameraId} autoplay failed:`, error);
-                        video.muted = true;
-                        video.play();
-                    });
-                    updateStreamStatus(cameraId, '接続済');
-                });
-
-                // フラグメントロード成功時にタイムスタンプを更新
-                hls.on(Hls.Events.FRAG_LOADED, function() {
-                    streamTimestamps[cameraId] = Date.now();
-                });
                 
-                // フラグメントデコード時にもタイムスタンプを更新
-                hls.on(Hls.Events.FRAG_DECODED, function() {
-                    streamTimestamps[cameraId] = Date.now();
-                });
-                
-                // レベル読み込み成功時にもタイムスタンプを更新
-                hls.on(Hls.Events.LEVEL_LOADED, function() {
-                    streamTimestamps[cameraId] = Date.now();
-                });
-
+                // エラーハンドラを先に設定
                 hls.on(Hls.Events.ERROR, function(event, data) {
                     console.log(`Camera ${cameraId} HLS error:`, data);
 
@@ -176,7 +212,9 @@
                                     retryAttempts[cameraId]++;
                                     updateStreamStatus(cameraId, '再接続中...');
                                     setTimeout(() => {
-                                        hls.startLoad();
+                                        if (hls && typeof hls.startLoad === 'function') {
+                                            hls.startLoad();
+                                        }
                                     }, RETRY_DELAY);
                                 } else {
                                     // 最大再試行回数を超えたら再読み込み
@@ -185,7 +223,11 @@
                                 break;
                             case Hls.ErrorTypes.MEDIA_ERROR:
                                 console.log(`Camera ${cameraId} media error, attempting recovery...`);
-                                hls.recoverMediaError();
+                                try {
+                                    hls.recoverMediaError();
+                                } catch (e) {
+                                    reloadStream(cameraId);
+                                }
                                 break;
                             default:
                                 if (retryAttempts[cameraId] < MAX_RETRY_ATTEMPTS) {
@@ -199,15 +241,76 @@
                         }
                     }
                 });
+                
+                // m3u8ファイルのロード
+                hls.loadSource(filePath);
+                hls.attachMedia(video);
+
+                // メディアがアタッチされたら再生
+                hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                    try {
+                        video.play().catch(function(error) {
+                            console.log(`Camera ${cameraId} autoplay failed:`, error);
+                            video.muted = true;
+                            video.play().catch(function(innerError) {
+                                console.log(`Camera ${cameraId} muted play failed:`, innerError);
+                            });
+                        });
+                        updateStreamStatus(cameraId, '接続済');
+                    } catch (e) {
+                        console.log(`Camera ${cameraId} play error:`, e);
+                    }
+                });
+
+                // フラグメントロード成功時にタイムスタンプを更新
+                hls.on(Hls.Events.FRAG_LOADED, function() {
+                    streamTimestamps[cameraId] = Date.now();
+                    retryAttempts[cameraId] = 0; // フラグメントが正常にロードされたらリセット
+                    
+                    // 正常に再生中であることを確認
+                    if (video && !video.paused) {
+                        lastPlayTime[cameraId] = video.currentTime;
+                    }
+                });
+                
+                // メディアの再接続イベント
+                hls.on(Hls.Events.BUFFER_APPENDED, function() {
+                    if (video.paused && pageActive) {
+                        try {
+                            video.play().catch(function(error) {
+                                console.log(`Camera ${cameraId} resume play failed:`, error);
+                            });
+                        } catch (e) {}
+                    }
+                });
 
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                // Safari用のフォールバック
                 video.src = filePath;
                 video.addEventListener('loadedmetadata', function() {
-                    video.play().catch(function(error) {
-                        console.log(`Camera ${cameraId} autoplay failed:`, error);
-                        video.muted = true;
-                        video.play();
-                    });
+                    try {
+                        video.play().catch(function(error) {
+                            console.log(`Camera ${cameraId} Safari autoplay failed:`, error);
+                            video.muted = true;
+                            video.play().catch(function(innerError) {
+                                console.log(`Camera ${cameraId} Safari muted play failed:`, innerError);
+                            });
+                        });
+                        updateStreamStatus(cameraId, '接続済');
+                    } catch (e) {
+                        console.log(`Camera ${cameraId} Safari play error:`, e);
+                    }
+                });
+                
+                // Safari用の監視
+                video.addEventListener('playing', function() {
+                    streamTimestamps[cameraId] = Date.now();
+                    lastPlayTime[cameraId] = video.currentTime;
+                });
+                
+                video.addEventListener('error', function(e) {
+                    console.log(`Camera ${cameraId} Safari video error:`, e);
+                    reloadStream(cameraId);
                 });
             }
         }
@@ -216,13 +319,17 @@
         function setupHealthChecks() {
             {% for camera in cameras %}
             setInterval(() => {
+                if (!pageActive) return; // ページが非アクティブならチェックしない
+                
                 const cameraId = '{{ camera.id }}';
                 const video = document.getElementById('video' + cameraId);
                 const currentTime = Date.now();
                 const lastUpdateTime = streamTimestamps[cameraId] || 0;
                 
+                if (!video) return;
+                
                 // 再生状態チェック - readyState 0はストリームが読み込まれていない状態
-                if (video && video.readyState === 0) {
+                if (video.readyState === 0) {
                     console.log(`Camera ${cameraId} stream not loaded, attempting recovery...`);
                     updateStreamStatus(cameraId, '再接続中...');
                     reloadStream(cameraId);
@@ -237,16 +344,52 @@
                     return;
                 }
                 
-                // バッファリングチェック - ビデオが一時停止しているかチェック
-                if (video && !video.paused && video.readyState > 1 && video.played.length > 0) {
-                    // ビデオは再生中だが、バッファリングが発生している可能性がある
+                // 再生が進んでいるかチェック
+                const currentPlayTime = video.currentTime;
+                const lastPlay = lastPlayTime[cameraId] || 0;
+                
+                if (!video.paused && lastPlay > 0 && currentPlayTime === lastPlay) {
+                    // 再生位置が変わっていない = スタックしている可能性
+                    console.log(`Camera ${cameraId} playback stuck at ${currentPlayTime}, attempting recovery...`);
+                    updateStreamStatus(cameraId, '再生停止 - 回復中...');
+                    
+                    // HLS.jsが利用可能な場合は再生を試みる
+                    if (players[cameraId]) {
+                        try {
+                            // レベルスイッチを試す
+                            if (players[cameraId].currentLevel !== -1) {
+                                players[cameraId].currentLevel = -1;
+                            }
+                            
+                            // 少し巻き戻してみる
+                            video.currentTime = Math.max(0, currentPlayTime - 1);
+                            
+                            // 再生を試みる
+                            video.play().catch(e => {
+                                console.log(`Camera ${cameraId} recovery play failed:`, e);
+                                reloadStream(cameraId);
+                            });
+                        } catch (e) {
+                            console.log(`Camera ${cameraId} recovery error:`, e);
+                            reloadStream(cameraId);
+                        }
+                    } else {
+                        reloadStream(cameraId);
+                    }
+                } else if (!video.paused) {
+                    // 再生位置が変わっている = 正常に再生中
+                    lastPlayTime[cameraId] = currentPlayTime;
+                }
+                
+                // バッファリングチェック
+                if (!video.paused && video.readyState > 1 && video.played.length > 0) {
                     if (video.buffered.length > 0) {
                         const bufferedEnd = video.buffered.end(video.buffered.length - 1);
                         const bufferedTime = bufferedEnd - video.currentTime;
                         
                         // バッファリング時間が極端に短い場合はストリームが詰まっている可能性
-                        if (bufferedTime < 0.5 && video.readyState < 4) {
-                            console.log(`Camera ${cameraId} insufficient buffer (${bufferedTime.toFixed(2)}s), may be stalling`);
+                        if (bufferedTime < 0.3 && video.readyState < 4) {
+                            console.log(`Camera ${cameraId} low buffer (${bufferedTime.toFixed(2)}s), may be stalling`);
                             updateStreamStatus(cameraId, 'バッファリング中...');
                         }
                     }
@@ -255,30 +398,70 @@
             {% endfor %}
         }
 
+        // 健全性ポーリング（サーバーに接続できることを確認）
+        function pingServer() {
+            setInterval(() => {
+                if (!pageActive) return;
+                
+                fetch('/system/cam/', { method: 'HEAD' })
+                    .then(response => {
+                        if (!response.ok) {
+                            console.log('Server ping failed, response not OK');
+                        }
+                    })
+                    .catch(error => {
+                        console.log('Server ping error:', error);
+                    });
+            }, 60000); // 1分ごとにサーバーをping
+        }
+
         window.onload = function() {
             {% for camera in cameras %}
                 initializePlayer('{{ camera.id }}');
             {% endfor %}
             
-            // 健全性チェックを設定
+            // 健全性チェックとサーバーポーリングを設定
             setupHealthChecks();
+            pingServer();
         };
 
         // バックグラウンド切り替え時の処理
         document.addEventListener('visibilitychange', function() {
+            pageActive = !document.hidden;
+            
             if (document.hidden) {
                 // バックグラウンドに移行した場合、各ストリームを一時停止
                 for (const cameraId in players) {
                     if (players[cameraId]) {
-                        players[cameraId].stopLoad();
+                        try {
+                            players[cameraId].stopLoad();
+                            updateStreamStatus(cameraId, '一時停止');
+                        } catch (e) {}
                     }
                 }
             } else {
                 // フォアグラウンドに戻った場合、各ストリームを再開
                 for (const cameraId in players) {
                     if (players[cameraId]) {
-                        players[cameraId].startLoad();
-                        streamTimestamps[cameraId] = Date.now(); // タイムスタンプを更新
+                        try {
+                            players[cameraId].startLoad();
+                            streamTimestamps[cameraId] = Date.now(); // タイムスタンプを更新
+                            updateStreamStatus(cameraId, '再開中...');
+                            
+                            // ビデオ要素を取得
+                            const video = document.getElementById('video' + cameraId);
+                            if (video) {
+                                video.play().catch(e => {
+                                    console.log(`Camera ${cameraId} resume play failed:`, e);
+                                });
+                            }
+                        } catch (e) {
+                            // エラーが発生したら再初期化
+                            console.log(`Camera ${cameraId} resume error:`, e);
+                            initializePlayer(cameraId);
+                        }
+                    } else {
+                        initializePlayer(cameraId);
                     }
                 }
             }
@@ -288,7 +471,9 @@
         window.addEventListener('beforeunload', function() {
             for (const cameraId in players) {
                 if (players[cameraId]) {
-                    players[cameraId].destroy();
+                    try {
+                        players[cameraId].destroy();
+                    } catch (e) {}
                 }
             }
         });
