@@ -129,11 +129,15 @@ def stop_all_recordings_route():
 def index():
     """メインページ"""
     cameras = camera_utils.read_config()
+    
+    # カメラ毎のストリーミング初期化を順次実行（並列処理避け）
     for camera in cameras:
-        streaming.get_or_start_streaming(camera)
-
-    # ストリームの初期化を待つ
-    time.sleep(1)
+        try:
+            streaming.get_or_start_streaming(camera)
+            # ストリームの初期化を待つ
+            time.sleep(2)
+        except Exception as e:
+            logging.error(f"Error initializing stream for camera {camera['id']}: {e}")
 
     return render_template('index.html', cameras=cameras)
 
@@ -141,11 +145,15 @@ def index():
 def index_admin():
     """管理ページ"""
     cameras = camera_utils.read_config()
+    
+    # カメラ毎のストリーミング初期化を順次実行（並列処理避け）
     for camera in cameras:
-        streaming.get_or_start_streaming(camera)
-
-    # ストリームの初期化を待つ
-    time.sleep(1)
+        try:
+            streaming.get_or_start_streaming(camera)
+            # ストリームの初期化を待つ
+            time.sleep(2)
+        except Exception as e:
+            logging.error(f"Error initializing stream for camera {camera['id']}: {e}")
 
     return render_template('admin.html', cameras=cameras)
 
@@ -162,10 +170,12 @@ def index_single():
     if target_camera is None:
         return 'Camera not found', 404
 
-    streaming.get_or_start_streaming(target_camera)
-
-    # ストリームの初期化を待つ
-    time.sleep(1)
+    try:
+        streaming.get_or_start_streaming(target_camera)
+        # ストリームの初期化を待つ
+        time.sleep(2)
+    except Exception as e:
+        logging.error(f"Error initializing stream for camera {camera_id}: {e}")
 
     return render_template('single.html', camera=target_camera)
 

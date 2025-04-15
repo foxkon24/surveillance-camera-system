@@ -20,9 +20,9 @@ MAX_RECORDING_HOURS = 1  # 最大録画時間（時間）
 MIN_DISK_SPACE_GB = 1    # 最小必要ディスク容量（GB）
 
 # ストリーミング設定
-RETRY_ATTEMPTS = 3       # 再試行回数
-RETRY_DELAY = 10         # 再試行遅延（秒）
-MAX_RETRY_DELAY = 60     # 最大再試行遅延（秒）
+RETRY_ATTEMPTS = 5       # 再試行回数 (3→5に増加)
+RETRY_DELAY = 30         # 再試行遅延（秒）(10→30に増加)
+MAX_RETRY_DELAY = 120    # 最大再試行遅延（秒）(60→120に増加)
 
 # ロギング設定
 def setup_logging():
