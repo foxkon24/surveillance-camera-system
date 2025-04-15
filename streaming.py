@@ -94,8 +94,9 @@ def get_or_start_streaming(camera):
         if os.path.exists(hls_path):
             try:
                 os.remove(hls_path)
-            except:
-                logging.warning(f"Could not remove existing m3u8 file: {hls_path}")
+                logging.info(f"Removed existing m3u8 file: {hls_path}")
+            except Exception as e:
+                logging.warning(f"Could not remove existing m3u8 file: {hls_path}, Error: {e}")
         
         # 古いTSファイルのクリーンアップ
         try:
@@ -104,10 +105,11 @@ def get_or_start_streaming(camera):
                     file_path = os.path.join(camera_tmp_dir, file)
                     try:
                         os.remove(file_path)
-                    except:
-                        pass
-        except:
-            pass
+                        logging.debug(f"Removed old ts file: {file_path}")
+                    except Exception as e:
+                        logging.warning(f"Could not remove ts file: {file_path}, Error: {e}")
+        except Exception as e:
+            logging.warning(f"Error cleaning up ts files: {e}")
 
         # 既存のffmpegプロセスが残っている場合、強制終了
         ffmpeg_utils.kill_ffmpeg_processes(camera_id)
@@ -125,9 +127,14 @@ def get_or_start_streaming(camera):
             return False
         else:
             # 接続成功したらエラーカウントをリセット
+            logging.info(f"Successfully connected to RTSP stream for camera {camera_id}")
             connection_error_counts[camera_id] = 0
             camera_connection_status[camera_id] = 1  # 接続中状態
 
+        # ディレクトリと権限の確認
+        logging.info(f"Ensuring tmp directory exists and has correct permissions: {camera_tmp_dir}")
+        fs_utils.ensure_directory_exists(camera_tmp_dir)
+        
         # セグメントパス - この場合はファイル名のみを指定し、相対パスにする
         segment_filename = f"{camera_id}_%03d.ts"
         
@@ -139,6 +146,8 @@ def get_or_start_streaming(camera):
             segment_time=5,  # セグメント長を短くして応答性を改善
             list_size=10     # リスト長を増やして安定性を向上
         )
+        
+        logging.info(f"Starting FFmpeg process with command: {' '.join(ffmpeg_command)}")
 
         # プロセス起動
         process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command, log_path=log_path)
@@ -157,8 +166,10 @@ def get_or_start_streaming(camera):
         hls_last_update[camera_id] = time.time()
         if os.path.exists(hls_path):
             m3u8_last_size[camera_id] = os.path.getsize(hls_path)
+            logging.info(f"Found initial m3u8 file with size: {m3u8_last_size[camera_id]}")
         else:
             m3u8_last_size[camera_id] = 0
+            logging.info(f"m3u8 file not found initially, will be created by FFmpeg")
 
         # 監視スレッドを開始
         monitor_thread = threading.Thread(
@@ -176,8 +187,14 @@ def get_or_start_streaming(camera):
         )
         hls_monitor_thread.start()
 
-        logging.info(f"Started streaming for camera {camera_id}")
-        return True
+        # 数秒待ってHLSファイルが作成されたか確認
+        time.sleep(2)
+        if os.path.exists(hls_path):
+            logging.info(f"HLS file created successfully: {hls_path}")
+            return True
+        else:
+            logging.warning(f"HLS file not created yet: {hls_path}, but process is running")
+            return True  # プロセスは開始されているのでTrueを返す
 
     except Exception as e:
         logging.error(f"Error starting streaming for camera {camera_id}: {e}")
@@ -275,6 +292,28 @@ def monitor_hls_updates(camera_id):
     max_failures = 2  # 連続でこの回数分問題が検出されたら再起動
     check_interval = HEALTH_CHECK_INTERVAL
     
+    # 最初のHLSファイル生成を待つ
+    wait_count = 0
+    max_wait = 30  # 最大30回 (30 * 2秒 = 60秒) 待つ
+    
+    while wait_count < max_wait:
+        if os.path.exists(hls_path):
+            logging.info(f"HLS file created for camera {camera_id} after {wait_count * 2} seconds")
+            break
+        
+        wait_count += 1
+        time.sleep(2)
+        
+        # プロセスが終了していたら待機を終了
+        if camera_id not in streaming_processes or not streaming_processes.get(camera_id):
+            logging.warning(f"Streaming process for camera {camera_id} no longer exists during initial wait")
+            return
+    
+    if wait_count >= max_wait and not os.path.exists(hls_path):
+        logging.error(f"HLS file not created for camera {camera_id} after {max_wait * 2} seconds, restarting")
+        restart_streaming(camera_id)
+        return
+    
     while True:
         try:
             # プロセスが存在するか確認
@@ -310,8 +349,9 @@ def monitor_hls_updates(camera_id):
                         hls_last_update[camera_id] = current_time
                         file_updated = True
                         failures = 0  # 正常更新を検出したらカウンタをリセット
-                except:
-                    pass
+                        logging.debug(f"m3u8 file updated for camera {camera_id}, size: {current_size}")
+                except Exception as e:
+                    logging.warning(f"Error checking m3u8 file size: {e}")
             
             # TSファイルの更新も確認
             try:
@@ -325,8 +365,9 @@ def monitor_hls_updates(camera_id):
                         hls_last_update[camera_id] = current_time
                         file_updated = True
                         failures = 0  # 正常更新を検出したらカウンタをリセット
-            except:
-                pass
+                        logging.debug(f"TS file updated for camera {camera_id}: {newest_ts}")
+            except Exception as e:
+                logging.warning(f"Error checking TS files: {e}")
             
             # ファイル更新が停止しているかチェック
             last_update = hls_last_update.get(camera_id, 0)

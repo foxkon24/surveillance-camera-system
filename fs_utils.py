@@ -11,15 +11,38 @@ from datetime import datetime
 def ensure_directory_exists(path):
     """ディレクトリが存在しない場合は作成"""
     if not os.path.exists(path):
-        os.makedirs(path)
+        try:
+            os.makedirs(path, exist_ok=True)
+            logging.info(f"Created directory: {path}")
+        except Exception as e:
+            logging.error(f"Error creating directory {path}: {e}")
+            raise
 
         try:
-            os.chmod(path, 0o777)  # ディレクトリに対して全権限を付与
-
+            # Windows環境の場合は権限設定が異なる
+            if os.name == 'nt':
+                # Windowsでは特に権限設定は不要なことが多い
+                pass
+            else:
+                os.chmod(path, 0o777)  # ディレクトリに対して全権限を付与
+            
+            logging.info(f"Set directory permissions for {path}")
         except OSError as e:
             logging.warning(f"Could not set directory permissions for {path}: {e}")
-
-        logging.info(f"Created directory: {path}")
+    elif not os.path.isdir(path):
+        logging.error(f"Path exists but is not a directory: {path}")
+        raise ValueError(f"Path exists but is not a directory: {path}")
+    
+    # ディレクトリの書き込み権限をチェック
+    try:
+        test_file_path = os.path.join(path, "_test_write_permission.tmp")
+        with open(test_file_path, 'w') as f:
+            f.write('test')
+        os.remove(test_file_path)
+        logging.debug(f"Verified write permissions for directory: {path}")
+    except Exception as e:
+        logging.error(f"Directory {path} does not have write permissions: {e}")
+        raise
 
 def get_free_space(path):
     """

@@ -33,7 +33,7 @@ def check_rtsp_connection(rtsp_url, timeout=10):
                     'ffprobe',
                     '-v', 'error',
                     '-rtsp_transport', 'tcp',
-                    '-stimeout', str(timeout * 1000000),  # マイクロ秒単位
+                    # stimeoutオプションを削除（この行が問題の原因）
                     '-i', rtsp_url,
                     '-show_entries', 'format=duration',
                     '-of', 'default=noprint_wrappers=1:nokey=1',
@@ -190,7 +190,7 @@ def check_audio_stream(rtsp_url):
             'ffprobe',
             '-v', 'quiet',
             '-rtsp_transport', 'tcp',
-            '-stimeout', '5000000',  # 5秒タイムアウト（マイクロ秒単位）
+            # stimeoutオプションを削除
             '-print_format', 'json',
             '-show_streams',
             '-i', rtsp_url
@@ -476,7 +476,7 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_filename, segment_time
     return [
         'ffmpeg',
         '-rtsp_transport', 'tcp',           # RTSPトランスポートにTCPを使用
-        '-stimeout', '5000000',             # RTSP接続タイムアウト (5秒、マイクロ秒単位)
+        # stimeoutオプションを削除
         '-buffer_size', '10240k',           # バッファサイズを増加
         '-use_wallclock_as_timestamps', '1',
         '-i', rtsp_url,
@@ -515,7 +515,7 @@ def get_ffmpeg_record_command(rtsp_url, output_path):
     return [
         'ffmpeg',
         '-rtsp_transport', 'tcp',             # TCPトランスポートを使用
-        '-stimeout', '5000000',               # RTSP接続タイムアウト (5秒、マイクロ秒単位)
+        # stimeoutオプションを削除
         '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
         '-i', rtsp_url,
         '-reset_timestamps', '1',             # タイムスタンプをリセット
