@@ -58,7 +58,7 @@ def check_rtsp_connection(rtsp_url, timeout=10):
 
 def kill_ffmpeg_processes(camera_id=None):
     """
-    ffmpegプロセスを強制終了する関数 - より穏やかな終了処理
+    ffmpegプロセスを強制終了する関数
 
     Args:
         camera_id (str, optional): 特定のカメラID。指定されない場合は全てのffmpegプロセスを終了
@@ -69,73 +69,45 @@ def kill_ffmpeg_processes(camera_id=None):
     try:
         # tasklist コマンドを実行してffmpegプロセスを検索
         result = subprocess.check_output('tasklist | findstr ffmpeg', shell=True).decode()
-        
+
         # 各行からPIDを抽出
         pids = []
         for line in result.split('\n'):
             if line.strip():
-                try:
-                    # スペースで分割し、2番目の要素（PID）を取得
-                    pid = line.split()[1]
-                    
-                    # 特定のカメラIDが指定された場合、プロセスの引数をチェック
-                    if camera_id:
-                        try:
-                            process = psutil.Process(int(pid))
-                            cmdline = ' '.join(process.cmdline())
-                            
-                            # コマンドラインに特定のカメラIDが含まれているか確認
-                            if str(camera_id) in cmdline:
-                                pids.append(pid)
-                                
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            continue
-                    else:
-                        pids.append(pid)
-                except IndexError:
-                    continue  # Skip malformed lines
-                    
-        # 見つかった各PIDに対して処理
+                # スペースで分割し、2番目の要素（PID）を取得
+                pid = line.split()[1]
+
+                # 特定のカメラIDが指定された場合、プロセスの引数をチェック
+                if camera_id:
+                    try:
+                        process = psutil.Process(int(pid))
+                        cmdline = ' '.join(process.cmdline())
+
+                        # コマンドラインに特定のカメラIDが含まれているか確認
+                        if camera_id in cmdline:
+                            pids.append(pid)
+
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                else:
+                    pids.append(pid)
+
+        # 見つかった各PIDに対してtaskkillを実行
         for pid in pids:
-            try:
-                process = psutil.Process(int(pid))
-                logging.info(f'Attempting to terminate FFmpeg process with PID: {pid}')
-                
-                # まず穏やかに終了を試みる
-                try:
-                    ctrlc_command = f'taskkill /PID {pid}'  # /F フラグを使わない
-                    subprocess.run(ctrlc_command, shell=True, timeout=5)
-                    time.sleep(2)  # 少し長めに待つ
-                    
-                    # プロセスがまだ実行中か確認
-                    if psutil.pid_exists(int(pid)):
-                        # 強制終了
-                        force_command = f'taskkill /F /PID {pid}'
-                        subprocess.run(force_command, shell=True)
-                        logging.info(f'Forcibly killed FFmpeg process with PID: {pid}')
-                    else:
-                        logging.info(f'Successfully terminated FFmpeg process with PID: {pid}')
-                        
-                except subprocess.TimeoutExpired:
-                    # タイムアウトした場合は強制終了
-                    force_command = f'taskkill /F /PID {pid}'
-                    subprocess.run(force_command, shell=True)
-                    logging.info(f'Forcibly killed FFmpeg process with PID: {pid} after timeout')
-                    
-            except Exception as e:
-                logging.error(f'Error terminating process {pid}: {e}')
-                
+            kill_command = f'taskkill /F /PID {pid}'
+            subprocess.run(kill_command, shell=True)
+            logging.info(f'Killed ffmpeg process with PID: {pid}')
+
         if not pids:
             logging.info('No ffmpeg processes found to kill.')
             return False
-            
-        time.sleep(2)  # プロセス終了を待つ
+
         return True
-            
+
     except subprocess.CalledProcessError:
         logging.info('No ffmpeg processes found.')
         return False
-        
+
     except Exception as e:
         logging.error(f'An error occurred during killing ffmpeg processes: {str(e)}')
         return False
@@ -155,13 +127,12 @@ def check_audio_stream(rtsp_url):
         ffprobe_command = [
             'ffprobe',
             '-v', 'quiet',
-            '-rtsp_transport', 'tcp',
             '-print_format', 'json',
             '-show_streams',
             '-i', rtsp_url
         ]
 
-        result = subprocess.run(ffprobe_command, capture_output=True, text=True, timeout=10)
+        result = subprocess.run(ffprobe_command, capture_output=True, text=True)
         stream_info = json.loads(result.stdout)
 
         # 音声ストリームの確認
@@ -208,9 +179,9 @@ def finalize_recording(file_path):
     except Exception as e:
         logging.error(f"Error finalizing recording: {e}")
 
-def start_ffmpeg_process(command, log_path=None, high_priority=False):
+def start_ffmpeg_process(command, log_path=None, high_priority=True):
     """
-    FFmpegプロセスを開始する - 改善版
+    FFmpegプロセスを開始する
 
     Args:
         command (list): FFmpegコマンドと引数のリスト
@@ -221,14 +192,9 @@ def start_ffmpeg_process(command, log_path=None, high_priority=False):
         subprocess.Popen: 生成されたプロセスオブジェクト
     """
     try:
-        # 通常優先度で実行
         creation_flags = subprocess.CREATE_NO_WINDOW
         if high_priority:
             creation_flags |= subprocess.HIGH_PRIORITY_CLASS
-
-        # コマンドの全体をログに出力
-        cmd_string = ' '.join(command)
-        logging.info(f"Executing FFmpeg command: {cmd_string}")
 
         if log_path:
             with open(log_path, 'w') as log_file:
@@ -248,10 +214,7 @@ def start_ffmpeg_process(command, log_path=None, high_priority=False):
             )
 
         logging.info(f"Started FFmpeg process with PID: {process.pid}")
-        
-        # プロセスに少し時間を与える
-        time.sleep(1)
-        
+
         return process
 
     except Exception as e:
@@ -348,28 +311,29 @@ def terminate_process(process, timeout=5):
     except Exception as e:
         logging.error(f"Error terminating process: {e}")
 
-def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, list_size=5):
+def get_ffmpeg_hls_command(rtsp_url, output_path, segment_filename, segment_time=2, list_size=5):
     """
     HLSストリーミング用のFFmpegコマンドを生成
 
     Args:
         rtsp_url (str): RTSPストリームURL
         output_path (str): .m3u8ファイルの出力パス
-        segment_path (str): セグメントファイルのパスパターン
+        segment_filename (str): セグメントファイルのファイル名パターン (パスではなくファイル名のみ)
         segment_time (int): セグメント長（秒）
         list_size (int): プレイリストのサイズ
 
     Returns:
         list: FFmpegコマンドのリスト
     """
-    # FFmpegはパスでスラッシュを使用
-    output_path = output_path.replace('\\', '/')
-    segment_path = segment_path.replace('\\', '/')
+    # 出力ディレクトリを取得 (m3u8ファイルがあるディレクトリ)
+    output_dir = os.path.dirname(output_path)
+    # セグメントファイルの完全パス
+    segment_path = os.path.join(output_dir, segment_filename)
     
     return [
         'ffmpeg',
-        '-rtsp_transport', 'tcp',           # TCPトランスポートを明示的に指定
-        '-buffer_size', '10240k',           # バッファサイズを増加
+        '-rtsp_transport', 'tcp',       # RTSPトランスポートにTCPを使用
+        '-buffer_size', '10240k',       # バッファサイズを増加
         '-use_wallclock_as_timestamps', '1',
         '-i', rtsp_url,
         '-reset_timestamps', '1',
@@ -377,17 +341,17 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, 
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
         '-reconnect_delay_max', '2',
-        '-thread_queue_size', '8192',       # スレッドキューサイズを増加
-        '-c:v', 'copy',                     # ビデオコーデックをそのままコピー
-        '-c:a', 'aac',
-        '-b:a', '128k',
-        '-ar', '44100',
-        '-ac', '2',
+        '-thread_queue_size', '8192',   # スレッドキューサイズを増加
+        '-c:v', 'copy',                 # ビデオはそのままコピー
+        '-c:a', 'aac',                  # 音声はAACに変換
+        '-b:a', '128k',                 # 音声ビットレート
+        '-ar', '44100',                 # サンプリングレート
+        '-ac', '2',                     # ステレオ音声
+        '-f', 'hls',                    # 出力フォーマットを明示的に指定
         '-hls_time', str(segment_time),
         '-hls_list_size', str(list_size),
-        '-hls_flags', 'delete_segments+append_list+program_date_time+independent_segments',
+        '-hls_flags', 'delete_segments+append_list+program_date_time',
         '-hls_segment_type', 'mpegts',
-        '-hls_allow_cache', '1',
         '-hls_segment_filename', segment_path,
         output_path
     ]
@@ -403,9 +367,6 @@ def get_ffmpeg_record_command(rtsp_url, output_path):
     Returns:
         list: FFmpegコマンドのリスト
     """
-    # FFmpegはパスでスラッシュを使用
-    output_path = output_path.replace('\\', '/')
-    
     return [
         'ffmpeg',
         '-rtsp_transport', 'tcp',             # TCPトランスポートを使用

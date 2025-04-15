@@ -40,38 +40,34 @@ def get_or_start_streaming(camera):
             camera_tmp_dir = os.path.join(config.TMP_PATH, camera['id'])
             fs_utils.ensure_directory_exists(camera_tmp_dir)
 
-            # HLSと関連ファイルのパス
+            # パスをWindowsスタイル（バックスラッシュ）で作成
             hls_path = os.path.join(camera_tmp_dir, f"{camera['id']}.m3u8")
             log_path = os.path.join(camera_tmp_dir, f"{camera['id']}.log")
 
-            # 既存のファイルをクリーンアップ
             if os.path.exists(hls_path):
-                try:
-                    os.remove(hls_path)
-                except OSError as e:
-                    logging.warning(f"Could not remove existing HLS file: {e}")
+                os.remove(hls_path)
 
-            # 既存のffmpegプロセスが残っている場合、終了
+            # 既存のffmpegプロセスが残っている場合、強制終了
             ffmpeg_utils.kill_ffmpeg_processes(camera['id'])
-            time.sleep(3)  # プロセス終了までの待機時間を増加
+            time.sleep(1)  # プロセス終了待ち
 
             # RTSPストリームの接続確認
             if not ffmpeg_utils.check_rtsp_connection(camera['rtsp_url']):
                 logging.warning(f"Failed to connect to RTSP stream for camera {camera['id']}: {camera['rtsp_url']}")
                 # 接続に失敗しても続行する - 後でリトライするため
 
-            # セグメントファイルのパス
-            segment_path = os.path.join(camera_tmp_dir, f"{camera['id']}_%03d.ts")
+            # セグメントパス - この場合はファイル名のみを指定し、相対パスにする
+            segment_filename = f"{camera['id']}_%03d.ts"
             
             # HLSストリーミング用FFmpegコマンド生成
             ffmpeg_command = ffmpeg_utils.get_ffmpeg_hls_command(
                 camera['rtsp_url'], 
                 hls_path,
-                segment_path
+                segment_filename
             )
 
             # プロセス起動
-            process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command, log_path=log_path, high_priority=False)
+            process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command, log_path=log_path)
             streaming_processes[camera['id']] = process
             
             # 初期化時点で更新情報を記録
@@ -80,9 +76,6 @@ def get_or_start_streaming(camera):
                 m3u8_last_size[camera['id']] = os.path.getsize(hls_path)
             else:
                 m3u8_last_size[camera['id']] = 0
-
-            # FFmpegの起動に少し時間を与える
-            time.sleep(2)
 
             # 監視スレッドを開始
             monitor_thread = threading.Thread(
@@ -122,11 +115,8 @@ def restart_streaming(camera_id):
     try:
         logging.warning(f"Restarting streaming for camera {camera_id}")
         
-        # 既存のffmpegプロセスを終了
+        # 既存のffmpegプロセスを強制終了
         ffmpeg_utils.kill_ffmpeg_processes(camera_id)
-        
-        # しっかり終了するまで待機
-        time.sleep(3)
         
         # ストリーミングプロセスを削除
         if camera_id in streaming_processes:
@@ -162,9 +152,6 @@ def monitor_hls_updates(camera_id):
     
     failures = 0
     max_failures = 2  # 連続でこの回数分問題が検出されたら再起動
-    
-    # 初回の監視は遅延させる（初期化に時間がかかるため）
-    time.sleep(10)
     
     while True:
         try:
@@ -232,23 +219,19 @@ def monitor_streaming_process(camera_id, process):
     max_failures = config.RETRY_ATTEMPTS
     retry_delay = config.RETRY_DELAY
     max_retry_delay = config.MAX_RETRY_DELAY
-    
-    # 初期化のために少し待機
-    time.sleep(5)
 
     while True:
         try:
             # プロセスが終了しているか確認
             if process.poll() is not None:
-                exit_code = process.poll()
                 consecutive_failures += 1
                 current_delay = min(retry_delay * consecutive_failures, max_retry_delay)
 
-                logging.warning(f"Streaming process for camera {camera_id} has died with code {exit_code}. "
+                logging.warning(f"Streaming process for camera {camera_id} has died with code {process.returncode}. "
                                 f"Attempt {consecutive_failures}/{max_failures}. "
                                 f"Waiting {current_delay} seconds before retry.")
 
-                # 既存のffmpegプロセスを確実に終了
+                # 既存のffmpegプロセスを強制終了
                 ffmpeg_utils.kill_ffmpeg_processes(camera_id)
                 time.sleep(current_delay)
 
