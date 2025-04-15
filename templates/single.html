@@ -11,10 +11,6 @@
     <div class="layout">
         <header><h1>監視カメラシステム</h1></header>
         <nav>
-            <ul>
-                <li><a href="/system/cam/">Top</a></li>
-                <li><a href="/system/cam/record/">録画データ</a></li>
-            </ul>
         </nav>
         <div class="container">
             <div class="camera">
@@ -22,10 +18,6 @@
                 <div class="video-container">
                     <video id="video{{ camera.id }}" autoplay playsinline muted></video>
                     <div class="stream-status" id="status-main"></div>
-                </div>
-                <div class="camera-controls">
-                    <button onclick="reloadStream()" class="reload-btn">再読み込み</button>
-                    <button onclick="restartCamera()" class="restart-btn">カメラ再起動</button>
                 </div>
             </div>
         </div>
@@ -39,36 +31,12 @@
         const RETRY_DELAY = 3000;
         const HEALTH_CHECK_INTERVAL = 10000;  // 10秒ごとにチェック
         const STREAM_STALL_TIMEOUT = 20000;   // 20秒間データなしでリロード
-        const CAMERA_ID = '{{ camera.id }}';
 
         function updateStreamStatus(status) {
             const statusElement = document.getElementById('status-main');
             if (statusElement) {
                 statusElement.textContent = status;
             }
-        }
-
-        function restartCamera() {
-            updateStreamStatus('サーバーで再起動中...');
-            
-            // サーバーにカメラの再起動をリクエスト
-            fetch(`/system/cam/restart/${CAMERA_ID}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.status === 'success') {
-                        updateStreamStatus('再起動成功 - 接続中...');
-                        // 数秒待ってからプレーヤーを再初期化
-                        setTimeout(() => {
-                            reloadStream();
-                        }, 5000);
-                    } else {
-                        updateStreamStatus('再起動失敗: ' + data.message);
-                    }
-                })
-                .catch(error => {
-                    console.error('Error restarting camera:', error);
-                    updateStreamStatus('再起動リクエストエラー');
-                });
         }
 
         function reloadStream() {
@@ -85,9 +53,9 @@
         }
 
         function initializePlayer() {
-            const cameraId = CAMERA_ID;
+            const cameraId = '{{ camera.id }}';
             const video = document.getElementById('video' + cameraId);
-            const filePath = `/system/cam/tmp/${cameraId}/${cameraId}.m3u8?v=${new Date().getTime()}`;
+            const filePath = '/system/cam/tmp/' + cameraId + '/' + cameraId + '.m3u8';
 
             if (hls) {
                 hls.destroy();
@@ -106,11 +74,21 @@
                     maxBufferLength: 10,
                     maxMaxBufferLength: 20,
                     manifestLoadingTimeOut: 10000,
-                    manifestLoadingMaxRetry: 5,
+                    manifestLoadingMaxRetry: 3,
                     levelLoadingTimeOut: 10000,
-                    levelLoadingMaxRetry: 5,
+                    levelLoadingMaxRetry: 3,
                     fragLoadingTimeOut: 10000,
-                    fragLoadingMaxRetry: 5
+                    fragLoadingMaxRetry: 3,
+                    // 追加のオプション
+                    capLevelToPlayerSize: true,  // プレイヤーサイズに合わせてレベルを制限
+                    startLevel: -1,              // 自動選択(-1)
+                    defaultAudioCodec: 'mp4a.40.2', // 標準的なAACコーデック指定
+                    progressive: false,          // 通常のHLSストリーミング
+                    xhrSetup: function(xhr) {
+                        xhr.addEventListener('error', function() {
+                            console.log('xhr error occurred');
+                        });
+                    }
                 });
 
                 hls.loadSource(filePath);
@@ -128,10 +106,7 @@
                 // フラグメントが正常にロードされた時のイベント
                 hls.on(Hls.Events.FRAG_LOADED, function() {
                     lastDataReceived = Date.now();
-                    // バッファリング後のステータス更新
-                    if (video.readyState >= 3) {
-                        updateStreamStatus('接続済');
-                    }
+                    // console.log("Fragment loaded, updating timestamp");
                 });
 
                 hls.on(Hls.Events.ERROR, function(event, data) {
@@ -219,27 +194,6 @@
             }, HEALTH_CHECK_INTERVAL);
         }
 
-        // システム状態をポーリング
-        function pollSystemStatus() {
-            setInterval(() => {
-                fetch('/system/cam/status')
-                    .then(response => response.json())
-                    .then(data => {
-                        // カメラの状態を確認
-                        const status = data.cameras[CAMERA_ID];
-                        if (status && (!status.streaming || !status.hls_exists)) {
-                            // サーバー側でストリーミングに問題がある場合
-                            const statusElement = document.getElementById('status-main');
-                            if (statusElement && statusElement.textContent !== '再読み込み中...' && 
-                                statusElement.textContent !== '接続中...' && statusElement.textContent !== 'サーバーで再起動中...') {
-                                updateStreamStatus('サーバー接続エラー');
-                            }
-                        }
-                    })
-                    .catch(error => console.error('Error polling system status:', error));
-            }, 30000); // 30秒ごとにポーリング
-        }
-
         // バックグラウンド切り替え時の処理
         document.addEventListener('visibilitychange', function() {
             if (document.hidden) {
@@ -260,7 +214,6 @@
         window.onload = function() {
             initializePlayer();
             setupHealthCheck();
-            pollSystemStatus();
         };
 
         // クリーンアップ

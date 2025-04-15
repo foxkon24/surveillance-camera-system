@@ -52,10 +52,6 @@
                             <video id="video{{ camera.id }}" autoplay playsinline muted style="width: 320px; height: 240px;"></video>
                             <div class="stream-status" id="status{{ camera.id }}"></div>
                         </div>
-                        <div class="camera-controls">
-                            <button onclick="reloadStream('{{ camera.id }}')" class="reload-btn">再読み込み</button>
-                            <button onclick="restartCamera('{{ camera.id }}')" class="restart-btn">カメラ再起動</button>
-                        </div>
                     </div>
                 {% endfor %}
             </div>
@@ -78,36 +74,12 @@
             }
         }
 
-        function restartCamera(cameraId) {
-            updateStreamStatus(cameraId, 'サーバーで再起動中...');
-            
-            // サーバーにカメラの再起動をリクエスト
-            fetch(`/system/cam/restart/${cameraId}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.status === 'success') {
-                        updateStreamStatus(cameraId, '再起動成功 - 接続中...');
-                        // 数秒待ってからプレーヤーを再初期化
-                        setTimeout(() => {
-                            reloadStream(cameraId);
-                        }, 5000);
-                    } else {
-                        updateStreamStatus(cameraId, '再起動失敗: ' + data.message);
-                    }
-                })
-                .catch(error => {
-                    console.error('Error restarting camera:', error);
-                    updateStreamStatus(cameraId, '再起動リクエストエラー');
-                });
-        }
-
         function reloadStream(cameraId) {
             console.log(`Reloading stream for camera ${cameraId}`);
             updateStreamStatus(cameraId, '再読み込み中...');
             
             if (players[cameraId]) {
                 players[cameraId].destroy();
-                players[cameraId] = null;
             }
             
             // 少し待ってから再初期化
@@ -116,12 +88,7 @@
 
         function initializePlayer(cameraId) {
             const video = document.getElementById('video' + cameraId);
-            if (!video) {
-                console.error(`Video element for camera ${cameraId} not found`);
-                return;
-            }
-            
-            const filePath = `/system/cam/tmp/${cameraId}/${cameraId}.m3u8?v=${new Date().getTime()}`;
+            const filePath = '/system/cam/tmp/' + cameraId + '/' + cameraId + '.m3u8';
 
             if (players[cameraId]) {
                 players[cameraId].destroy();
@@ -129,7 +96,6 @@
 
             retryAttempts[cameraId] = 0;
             streamTimestamps[cameraId] = Date.now();  // 初期化時のタイムスタンプを記録
-            updateStreamStatus(cameraId, '接続中...');
 
             if (Hls.isSupported()) {
                 const hls = new Hls({
@@ -140,14 +106,25 @@
                     maxBufferLength: 10,
                     maxMaxBufferLength: 20,
                     manifestLoadingTimeOut: 10000,
-                    manifestLoadingMaxRetry: 5,
+                    manifestLoadingMaxRetry: 3,
                     levelLoadingTimeOut: 10000,
-                    levelLoadingMaxRetry: 5,
+                    levelLoadingMaxRetry: 3,
                     fragLoadingTimeOut: 10000,
-                    fragLoadingMaxRetry: 5
+                    fragLoadingMaxRetry: 3,
+                    // 追加のオプション
+                    capLevelToPlayerSize: true,  // プレイヤーサイズに合わせてレベルを制限
+                    startLevel: -1,              // 自動選択(-1)
+                    defaultAudioCodec: 'mp4a.40.2', // 標準的なAACコーデック指定
+                    progressive: false,          // 通常のHLSストリーミング
+                    xhrSetup: function(xhr) {
+                        xhr.addEventListener('error', function() {
+                            console.log('xhr error occurred');
+                        });
+                    }
                 });
 
                 players[cameraId] = hls;
+                updateStreamStatus(cameraId, '接続中...');
 
                 hls.loadSource(filePath);
                 hls.attachMedia(video);
@@ -164,10 +141,6 @@
                 // フラグメントロード成功時にタイムスタンプを更新
                 hls.on(Hls.Events.FRAG_LOADED, function() {
                     streamTimestamps[cameraId] = Date.now();
-                    // バッファリング後のステータス更新
-                    if (video.readyState >= 3) {
-                        updateStreamStatus(cameraId, '接続済');
-                    }
                 });
 
                 hls.on(Hls.Events.ERROR, function(event, data) {
@@ -262,28 +235,6 @@
             {% endfor %}
         }
 
-        // システム状態をポーリング
-        function pollSystemStatus() {
-            setInterval(() => {
-                fetch('/system/cam/status')
-                    .then(response => response.json())
-                    .then(data => {
-                        // 各カメラの状態を更新
-                        for (const [cameraId, status] of Object.entries(data.cameras)) {
-                            if (!status.streaming || !status.hls_exists) {
-                                // サーバー側でストリーミングに問題がある場合
-                                const statusElement = document.getElementById('status' + cameraId);
-                                if (statusElement && statusElement.textContent !== '再読み込み中...' && 
-                                    statusElement.textContent !== '接続中...' && statusElement.textContent !== 'サーバーで再起動中...') {
-                                    updateStreamStatus(cameraId, 'サーバー接続エラー');
-                                }
-                            }
-                        }
-                    })
-                    .catch(error => console.error('Error polling system status:', error));
-            }, 30000); // 30秒ごとにポーリング
-        }
-
         window.onload = function() {
             {% for camera in cameras %}
                 initializePlayer('{{ camera.id }}');
@@ -291,9 +242,6 @@
             
             // 健全性チェックを設定
             setupHealthChecks();
-            
-            // システム状態ポーリングを開始
-            pollSystemStatus();
         };
 
         // バックグラウンド切り替え時の処理
