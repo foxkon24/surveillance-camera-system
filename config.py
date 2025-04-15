@@ -5,7 +5,7 @@
 import os
 import logging
 import sys
-import time
+import subprocess
 
 # 基本パス設定
 BASE_PATH = os.path.join('D:\\', 'laragon', 'www', 'system', 'cam')
@@ -20,21 +20,13 @@ MAX_RECORDING_HOURS = 1  # 最大録画時間（時間）
 MIN_DISK_SPACE_GB = 1    # 最小必要ディスク容量（GB）
 
 # ストリーミング設定
-RETRY_ATTEMPTS = 5       # 再試行回数
-RETRY_DELAY = 5          # 再試行遅延（秒）
+RETRY_ATTEMPTS = 3       # 再試行回数
+RETRY_DELAY = 10         # 再試行遅延（秒）
 MAX_RETRY_DELAY = 60     # 最大再試行遅延（秒）
 
 # ロギング設定
 def setup_logging():
     """ロギングの設定を行う"""
-    # ログディレクトリが存在しない場合は作成
-    log_dir = os.path.dirname(LOG_PATH)
-    if not os.path.exists(log_dir):
-        try:
-            os.makedirs(log_dir)
-        except Exception as e:
-            print(f"Error creating log directory: {e}")
-
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -49,9 +41,6 @@ def setup_logging():
     console.setFormatter(formatter)
     logging.getLogger('').addHandler(console)
 
-    # アプリケーション識別情報をログに記録
-    logging.info(f"Process ID: {os.getpid()}")
-
     logging.info("Logging initialized")
 
 # 設定ファイルの存在チェック
@@ -59,18 +48,6 @@ def check_config_file():
     """設定ファイルの存在チェック"""
     if not os.path.exists(CONFIG_PATH):
         logging.error(f"設定ファイルが見つかりません: {CONFIG_PATH}")
-        
-        # サンプル設定ファイルをコピー（存在する場合）
-        sample_path = os.path.join(os.path.dirname(CONFIG_PATH), 'cam_config - sample.txt')
-        if os.path.exists(sample_path):
-            try:
-                import shutil
-                shutil.copy(sample_path, CONFIG_PATH)
-                logging.info(f"サンプル設定ファイルをコピーしました: {CONFIG_PATH}")
-                return True
-            except Exception as e:
-                logging.error(f"サンプル設定ファイルのコピーに失敗しました: {e}")
-        
         return False
 
     return True
@@ -79,11 +56,12 @@ def check_config_file():
 def check_ffmpeg():
     """FFmpegの利用可能性をチェック"""
     try:
-        import subprocess
-
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True)
+        # シェルを使用して実行（権限問題回避）
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, shell=True)
         if result.returncode == 0:
-            logging.info(f"FFmpegが正常に検出されました: {result.stdout.split('\\n')[0]}")
+            logging.info("FFmpegが正常に検出されました")
+            # FFmpegバージョンを出力
+            logging.info(f"FFmpeg version: {result.stdout.splitlines()[0]}")
             return True
         else:
             logging.error("FFmpegが見つかりません")

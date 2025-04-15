@@ -15,41 +15,20 @@ def read_config():
         list: カメラ情報のリスト。各カメラは辞書形式。
     """
     try:
-        if not os.path.exists(config.CONFIG_PATH):
-            logging.error(f"設定ファイルが存在しません: {config.CONFIG_PATH}")
-            return []
-            
         with open(config.CONFIG_PATH, 'r', encoding='utf-8') as file:
             cameras = []
-            line_number = 0
 
             for line in file:
-                line_number += 1
-                line = line.strip()
-                
-                # 空行またはコメント行（#で始まる行）をスキップ
-                if not line or line.startswith('#'):
-                    continue
-                    
-                parts = line.split(',')
-
-                # 最低でもID、名前、URLの3要素が必要
-                if len(parts) < 3:
-                    logging.warning(f"設定ファイルの{line_number}行目が不正なフォーマットです: {line}")
-                    continue
+                parts = line.strip().split(',')
 
                 # RTSPURLが空の場合はスキップ
-                if not parts[2].strip():
-                    logging.warning(f"設定ファイルの{line_number}行目のRTSP URLが空です: {line}")
-                    continue
+                if len(parts) >= 3 and parts[2].strip():
+                    cameras.append({
+                        'id': parts[0],
+                        'name': parts[1],
+                        'rtsp_url': parts[2]
+                    })
 
-                cameras.append({
-                    'id': parts[0].strip(),
-                    'name': parts[1].strip(),
-                    'rtsp_url': parts[2].strip()
-                })
-
-            logging.info(f"{len(cameras)} 台のカメラ設定を読み込みました")
             return cameras
 
     except Exception as e:
@@ -65,21 +44,11 @@ def read_config_names():
     """
     camera_names = {}
     try:
-        if not os.path.exists(config.CONFIG_PATH):
-            logging.error(f"設定ファイルが存在しません: {config.CONFIG_PATH}")
-            return {}
-            
         with open(config.CONFIG_PATH, 'r', encoding='utf-8') as file:
             for line in file:
-                line = line.strip()
-                
-                # 空行またはコメント行をスキップ
-                if not line or line.startswith('#'):
-                    continue
-                    
-                parts = line.split(',')
+                parts = line.strip().split(',')
                 if len(parts) >= 2:
-                    camera_names[parts[0].strip()] = parts[1].strip()  # カメラIDと名前をマッピング
+                    camera_names[parts[0]] = parts[1]  # カメラIDと名前をマッピング
 
     except Exception as e:
         logging.error(f"設定ファイル読み込みエラー: {e}")
@@ -130,8 +99,7 @@ def get_recordings(base_path=None):
                             date_str = file.split('_')[1].split('.')[0]
                             date = datetime.strptime(date_str, '%Y%m%d%H%M%S')
 
-                        except Exception as e:
-                            logging.warning(f"日時解析エラー {file}: {e}")
+                        except:
                             date = datetime.fromtimestamp(file_mtime)
 
                         mp4_files.append({
@@ -166,5 +134,4 @@ def get_camera_by_id(camera_id):
         if camera['id'] == camera_id:
             return camera
 
-    logging.warning(f"カメラID {camera_id} の設定が見つかりません")
     return None

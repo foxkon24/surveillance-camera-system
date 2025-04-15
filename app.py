@@ -6,8 +6,6 @@ import os
 import logging
 import sys
 import time
-import platform
-import psutil
 
 # 自作モジュールのインポート
 import config
@@ -56,16 +54,11 @@ def serve_tmp_files(camera_id, filename):
         if not os.path.exists(file_path):
             return "File not found", 404
 
-        mime_type = 'application/vnd.apple.mpegurl' if filename.endswith('.m3u8') else None
-        
-        # 追加のデバッグログ
-        logging.info(f"Serving file: {file_path}, Exists: {os.path.exists(file_path)}, Size: {os.path.getsize(file_path) if os.path.exists(file_path) else 'N/A'}")
-        
         return send_from_directory(
             directory,
             os.path.basename(file_path),
             as_attachment=False,
-            mimetype=mime_type)
+            mimetype = 'application/vnd.apple.mpegurl' if filename.endswith('.m3u8') else None)
 
     except Exception as e:
         logging.error(f"Error serving file {filename} for camera {camera_id}: {e}")
@@ -140,7 +133,7 @@ def index():
         streaming.get_or_start_streaming(camera)
 
     # ストリームの初期化を待つ
-    time.sleep(2)
+    time.sleep(1)
 
     return render_template('index.html', cameras=cameras)
 
@@ -152,7 +145,7 @@ def index_admin():
         streaming.get_or_start_streaming(camera)
 
     # ストリームの初期化を待つ
-    time.sleep(2)
+    time.sleep(1)
 
     return render_template('admin.html', cameras=cameras)
 
@@ -172,7 +165,7 @@ def index_single():
     streaming.get_or_start_streaming(target_camera)
 
     # ストリームの初期化を待つ
-    time.sleep(2)
+    time.sleep(1)
 
     return render_template('single.html', camera=target_camera)
 
@@ -184,60 +177,17 @@ def backup_recordings():
 
     return render_template('backup_recordings.html', recordings=recordings, camera_names=camera_names)
 
-@app.route('/system/cam/status')
-def system_status():
-    """システムステータスを表示"""
-    status = {
-        "cameras": {},
-        "system": {
-            "cpu_usage": psutil.cpu_percent(),
-            "memory_usage": psutil.virtual_memory().percent,
-            "disk_usage": psutil.disk_usage('/').percent,
-            "uptime": int(time.time() - psutil.boot_time())
-        }
-    }
-    
-    # カメラステータスを取得
-    cameras = camera_utils.read_config()
-    for camera in cameras:
-        camera_id = camera['id']
-        camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
-        hls_path = os.path.join(camera_tmp_dir, f"{camera_id}.m3u8")
-        
-        status["cameras"][camera_id] = {
-            "name": camera["name"],
-            "streaming": camera_id in streaming.streaming_processes and streaming.streaming_processes[camera_id].poll() is None,
-            "hls_exists": os.path.exists(hls_path),
-            "last_update": round(time.time() - streaming.hls_last_update.get(camera_id, 0)) if camera_id in streaming.hls_last_update else None
-        }
-    
-    return jsonify(status)
-
-@app.route('/system/cam/restart/<camera_id>')
-def restart_camera(camera_id):
-    """特定カメラのストリーミングを再起動"""
-    try:
-        success = streaming.restart_streaming(camera_id)
-        if success:
-            return jsonify({"status": "success", "message": f"Camera {camera_id} restarted successfully"})
-        else:
-            return jsonify({"status": "error", "message": f"Failed to restart camera {camera_id}"}), 500
-    except Exception as e:
-        logging.error(f"Error restarting camera {camera_id}: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
 def initialize_app():
     """アプリケーション初期化"""
     try:
         # ロギングの設定
         config.setup_logging()
-        
-        # アプリケーション起動情報をログに記録
+
+        # ログの初期メッセージ
         logging.info("============= アプリケーション起動 =============")
         logging.info(f"実行パス: {os.getcwd()}")
         logging.info(f"Pythonバージョン: {sys.version}")
         logging.info(f"OSバージョン: {os.name}")
-        logging.info(f"Process ID: {os.getpid()}")
 
         # 基本ディレクトリの確認
         for directory in [config.BASE_PATH, config.TMP_PATH, config.RECORD_PATH, config.BACKUP_PATH]:
@@ -252,8 +202,6 @@ def initialize_app():
         cameras = camera_utils.read_config()
         if not cameras:
             logging.warning("有効なカメラ設定が見つかりません")
-        else:
-            logging.info(f"{len(cameras)} 台のカメラ設定を読み込みました")
 
         # ストリーミングシステムの初期化
         streaming.initialize_streaming()
@@ -266,18 +214,6 @@ def initialize_app():
             logging.error("FFmpegが見つかりません")
             return False
 
-        # IPアドレスの取得
-        try:
-            for interface, addrs in psutil.net_if_addrs().items():
-                for addr in addrs:
-                    if addr.family == 2:  # IPv4
-                        ip = addr.address
-                        if not ip.startswith("127."):
-                            logging.info(f"Server IP: http://{ip}:5000/system/cam/")
-                            print(f"Server IP: http://{ip}:5000/system/cam/")
-        except Exception as e:
-            logging.error(f"Error getting IP address: {e}")
-
         return True
 
     except Exception as e:
@@ -286,16 +222,6 @@ def initialize_app():
 
 if __name__ == '__main__':
     try:
-        # 管理者権限で実行されているか確認（Windowsの場合）
-        if os.name == 'nt':
-            try:
-                import ctypes
-                is_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
-                print(f"Running with {'administrative' if is_admin else 'standard user'} privileges.")
-                logging.info(f"Running with {'administrative' if is_admin else 'standard user'} privileges.")
-            except:
-                pass
-
         if not initialize_app():
             print("アプリケーションの初期化に失敗しました。ログを確認してください。")
             sys.exit(1)

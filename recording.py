@@ -13,7 +13,6 @@ import config
 import ffmpeg_utils
 import fs_utils
 import camera_utils
-import streaming
 
 # グローバル変数
 recording_processes = {}
@@ -71,19 +70,11 @@ def start_new_recording(camera_id, rtsp_url):
     try:
         logging.info(f"Starting new recording for camera {camera_id} with URL {rtsp_url}")
 
-        # 推奨トランスポートモードを取得（ストリーミングから取得）
-        rtsp_transport = streaming.rtsp_transport_mode.get(camera_id, 'tcp')
-        
-        # RTSPストリームの接続テスト
-        logging.info(f"Testing RTSP connection for recording camera {camera_id}")
-        connection_ok, recommended_transport, error_msg = ffmpeg_utils.test_rtsp_connection(rtsp_url)
-        
-        if not connection_ok:
-            logging.error(f"Failed to connect to RTSP stream for recording camera {camera_id}: {error_msg}")
-            # エラーがあっても続行を試みる
-        elif recommended_transport:
-            rtsp_transport = recommended_transport
-            logging.info(f"Using {rtsp_transport} transport for recording camera {camera_id}")
+        # RTSP接続の確認
+        if not ffmpeg_utils.check_rtsp_connection(rtsp_url):
+            error_msg = f"Cannot connect to RTSP stream: {rtsp_url}"
+            logging.error(error_msg)
+            raise Exception(error_msg)
 
         # 音声ストリームの確認を追加
         has_audio = ffmpeg_utils.check_audio_stream(rtsp_url)
@@ -101,7 +92,7 @@ def start_new_recording(camera_id, rtsp_url):
         logging.info(f"Recording will be saved to: {file_path}")
 
         # FFmpegコマンドを生成
-        ffmpeg_command = ffmpeg_utils.get_ffmpeg_record_command(rtsp_url, file_path, rtsp_transport)
+        ffmpeg_command = ffmpeg_utils.get_ffmpeg_record_command(rtsp_url, file_path)
         logging.info(f"Executing FFmpeg command: {' '.join(ffmpeg_command)}")
 
         # プロセスを開始
@@ -135,56 +126,10 @@ def start_new_recording(camera_id, rtsp_url):
 
         if process.poll() is not None:
             return_code = process.poll()
-            error_output = ""
-            if process.stderr:
-                try:
-                    error_output = process.stderr.read().decode('utf-8', errors='replace')
-                except:
-                    error_output = "Could not read stderr"
-                
+            error_output = process.stderr.read().decode('utf-8', errors='replace')
             logging.error(f"FFmpeg process failed to start. Return code: {return_code}")
             logging.error(f"FFmpeg error output: {error_output}")
-            
-            # TCPで失敗したらUDPを試す、その逆も
-            if rtsp_transport == 'tcp':
-                logging.info(f"Retrying recording with UDP transport for camera {camera_id}")
-                rtsp_transport = 'udp'
-                # 録画をクリーンアップ
-                if camera_id in recording_processes:
-                    del recording_processes[camera_id]
-                if os.path.exists(file_path) and os.path.getsize(file_path) == 0:
-                    try:
-                        os.remove(file_path)
-                    except:
-                        pass
-                
-                # 新しいコマンドとプロセスで再試行
-                file_path = fs_utils.get_record_file_path(config.RECORD_PATH, camera_id)
-                ffmpeg_command = ffmpeg_utils.get_ffmpeg_record_command(rtsp_url, file_path, rtsp_transport)
-                logging.info(f"Retrying FFmpeg command: {' '.join(ffmpeg_command)}")
-                
-                process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command)
-                
-                recording_processes[camera_id] = {
-                    'process': process,
-                    'file_path': file_path
-                }
-                recording_start_times[camera_id] = datetime.now()
-                
-                # 再度モニタリングスレッドを設定
-                error_thread = threading.Thread(
-                    target=ffmpeg_utils.monitor_ffmpeg_output, 
-                    args=(process,), 
-                    daemon=True
-                )
-                error_thread.start()
-                
-                time.sleep(2)
-                if process.poll() is not None:
-                    logging.error(f"Both TCP and UDP transports failed for recording camera {camera_id}")
-                    raise Exception(f"FFmpeg failed to start with both TCP and UDP: {error_output}")
-            else:
-                raise Exception(f"FFmpeg failed to start: {error_output}")
+            raise Exception(f"FFmpeg failed to start: {error_output}")
 
     except Exception as e:
         logging.error(f"Error starting new recording for camera {camera_id}: {e}")

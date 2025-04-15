@@ -11,18 +11,15 @@ from datetime import datetime
 def ensure_directory_exists(path):
     """ディレクトリが存在しない場合は作成"""
     if not os.path.exists(path):
-        try:
-            os.makedirs(path)
-            logging.info(f"Created directory: {path}")
+        os.makedirs(path)
 
-            try:
-                os.chmod(path, 0o777)  # ディレクトリに対して全権限を付与
-            except OSError as e:
-                logging.warning(f"Could not set directory permissions for {path}: {e}")
-                
-        except Exception as e:
-            logging.error(f"Error creating directory {path}: {e}")
-            raise
+        try:
+            os.chmod(path, 0o777)  # ディレクトリに対して全権限を付与
+
+        except OSError as e:
+            logging.warning(f"Could not set directory permissions for {path}: {e}")
+
+        logging.info(f"Created directory: {path}")
 
 def get_free_space(path):
     """
@@ -39,11 +36,7 @@ def get_free_space(path):
             # Windowsの場合はドライブのルートパスを取得
             if os.name == 'nt':
                 drive = os.path.splitdrive(os.path.abspath(path))[0]
-                if drive:
-                    free_bytes = psutil.disk_usage(drive).free
-                else:
-                    # ドライブが取得できない場合はパス自体を使用
-                    free_bytes = psutil.disk_usage(path).free
+                free_bytes = psutil.disk_usage(drive).free
             else:
                 free_bytes = psutil.disk_usage(path).free
 
