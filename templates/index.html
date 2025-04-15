@@ -7,7 +7,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.18/hls.js"></script>
     <title>監視カメラシステム</title>
     <script>
-        // 5分間隔でページを自動更新する関数
+        // 15分間隔でページを自動更新する関数
         function setupAutoRefresh() {
             setInterval(function() {
                 // アクティブなビデオストリームがある場合は更新をスキップ
@@ -24,7 +24,7 @@
                 if (!activeStreams) {
                     location.reload();
                 }
-            }, 300000); // 5分 = 300000ミリ秒
+            }, 900000); // 15分 = 900000ミリ秒
         }
 
         // ページ読み込み完了時に自動更新を設定
@@ -62,10 +62,10 @@
         const players = {};
         const retryAttempts = {};
         const streamTimestamps = {};  // ストリームデータの最終受信時間を追跡
-        const MAX_RETRY_ATTEMPTS = 5;
-        const RETRY_DELAY = 3000;
-        const STREAM_CHECK_INTERVAL = 10000;  // 10秒ごとにストリームをチェック
-        const STREAM_STALL_TIMEOUT = 20000;  // 20秒間データが来なければ停止とみなす
+        const MAX_RETRY_ATTEMPTS = 10;  // 増加
+        const RETRY_DELAY = 5000;  // 増加
+        const STREAM_CHECK_INTERVAL = 20000;  // 増加
+        const STREAM_STALL_TIMEOUT = 45000;  // 増加
 
         function updateStreamStatus(cameraId, status) {
             const statusElement = document.getElementById('status' + cameraId);
@@ -83,7 +83,7 @@
             }
             
             // 少し待ってから再初期化
-            setTimeout(() => initializePlayer(cameraId), 1000);
+            setTimeout(() => initializePlayer(cameraId), 3000);
         }
 
         function initializePlayer(cameraId) {
@@ -96,27 +96,38 @@
 
             retryAttempts[cameraId] = 0;
             streamTimestamps[cameraId] = Date.now();  // 初期化時のタイムスタンプを記録
+            updateStreamStatus(cameraId, '接続中...');
 
             if (Hls.isSupported()) {
                 const hls = new Hls({
                     debug: false,
                     enableWorker: true,
                     lowLatencyMode: true,
-                    backBufferLength: 30,
-                    maxBufferLength: 10,
-                    maxMaxBufferLength: 20,
-                    manifestLoadingTimeOut: 10000,
-                    manifestLoadingMaxRetry: 3,
-                    levelLoadingTimeOut: 10000,
-                    levelLoadingMaxRetry: 3,
-                    fragLoadingTimeOut: 10000,
-                    fragLoadingMaxRetry: 3,
+                    backBufferLength: 60,  // 増加
+                    maxBufferLength: 30,  // 増加
+                    maxMaxBufferLength: 60,  // 増加
+                    manifestLoadingTimeOut: 20000,  // 増加
+                    manifestLoadingMaxRetry: 5,  // 増加
+                    levelLoadingTimeOut: 20000,  // 増加
+                    levelLoadingMaxRetry: 5,  // 増加
+                    fragLoadingTimeOut: 20000,  // 増加
+                    fragLoadingMaxRetry: 5,  // 増加
+                    
                     // 追加のオプション
-                    capLevelToPlayerSize: true,  // プレイヤーサイズに合わせてレベルを制限
+                    liveSyncDuration: 3,    // ライブ同期時間（秒）
+                    liveMaxLatencyDuration: 10,  // 最大遅延許容値
+                    liveDurationInfinity: true,  // 無限ライブ再生
+                    enableStashBuffer: true,     // スタッシュバッファを有効化
+                    
+                    // キャッシュ関連設定
+                    appendErrorMaxRetry: 5,       // 追加エラー時の最大再試行
                     startLevel: -1,              // 自動選択(-1)
                     defaultAudioCodec: 'mp4a.40.2', // 標準的なAACコーデック指定
                     progressive: false,          // 通常のHLSストリーミング
+                    
+                    // XHRリクエスト設定
                     xhrSetup: function(xhr) {
+                        xhr.timeout = 30000;  // XHRタイムアウトを30秒に設定
                         xhr.addEventListener('error', function() {
                             console.log('xhr error occurred');
                         });
@@ -124,7 +135,6 @@
                 });
 
                 players[cameraId] = hls;
-                updateStreamStatus(cameraId, '接続中...');
 
                 hls.loadSource(filePath);
                 hls.attachMedia(video);
@@ -140,6 +150,16 @@
 
                 // フラグメントロード成功時にタイムスタンプを更新
                 hls.on(Hls.Events.FRAG_LOADED, function() {
+                    streamTimestamps[cameraId] = Date.now();
+                });
+                
+                // フラグメントデコード時にもタイムスタンプを更新
+                hls.on(Hls.Events.FRAG_DECODED, function() {
+                    streamTimestamps[cameraId] = Date.now();
+                });
+                
+                // レベル読み込み成功時にもタイムスタンプを更新
+                hls.on(Hls.Events.LEVEL_LOADED, function() {
                     streamTimestamps[cameraId] = Date.now();
                 });
 

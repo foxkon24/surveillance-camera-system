@@ -27,10 +27,10 @@
         let hls = null;
         let retryAttempts = 0;
         let lastDataReceived = Date.now();  // データ受信の最終時刻
-        const MAX_RETRY_ATTEMPTS = 5;
-        const RETRY_DELAY = 3000;
-        const HEALTH_CHECK_INTERVAL = 10000;  // 10秒ごとにチェック
-        const STREAM_STALL_TIMEOUT = 20000;   // 20秒間データなしでリロード
+        const MAX_RETRY_ATTEMPTS = 10;  // 増加
+        const RETRY_DELAY = 5000;  // 増加
+        const HEALTH_CHECK_INTERVAL = 20000;  // 増加
+        const STREAM_STALL_TIMEOUT = 45000;   // 増加
 
         function updateStreamStatus(status) {
             const statusElement = document.getElementById('status-main');
@@ -49,7 +49,7 @@
             }
             
             // 少し待ってから再初期化
-            setTimeout(initializePlayer, 1000);
+            setTimeout(initializePlayer, 3000);
         }
 
         function initializePlayer() {
@@ -70,21 +70,31 @@
                     debug: false,
                     enableWorker: true,
                     lowLatencyMode: true,
-                    backBufferLength: 30,
-                    maxBufferLength: 10,
-                    maxMaxBufferLength: 20,
-                    manifestLoadingTimeOut: 10000,
-                    manifestLoadingMaxRetry: 3,
-                    levelLoadingTimeOut: 10000,
-                    levelLoadingMaxRetry: 3,
-                    fragLoadingTimeOut: 10000,
-                    fragLoadingMaxRetry: 3,
+                    backBufferLength: 60,  // 増加
+                    maxBufferLength: 30,   // 増加
+                    maxMaxBufferLength: 60,  // 増加
+                    manifestLoadingTimeOut: 20000,  // 増加
+                    manifestLoadingMaxRetry: 5,  // 増加
+                    levelLoadingTimeOut: 20000,  // 増加
+                    levelLoadingMaxRetry: 5,  // 増加
+                    fragLoadingTimeOut: 20000,  // 増加
+                    fragLoadingMaxRetry: 5,  // 増加
+                    
                     // 追加のオプション
-                    capLevelToPlayerSize: true,  // プレイヤーサイズに合わせてレベルを制限
+                    liveSyncDuration: 3,    // ライブ同期時間（秒）
+                    liveMaxLatencyDuration: 10,  // 最大遅延許容値
+                    liveDurationInfinity: true,  // 無限ライブ再生
+                    enableStashBuffer: true,     // スタッシュバッファを有効化
+                    
+                    // キャッシュ関連設定
+                    appendErrorMaxRetry: 5,      // 追加エラー時の最大再試行
                     startLevel: -1,              // 自動選択(-1)
                     defaultAudioCodec: 'mp4a.40.2', // 標準的なAACコーデック指定
                     progressive: false,          // 通常のHLSストリーミング
+                    
+                    // XHRリクエスト設定
                     xhrSetup: function(xhr) {
+                        xhr.timeout = 30000;  // XHRタイムアウトを30秒に設定
                         xhr.addEventListener('error', function() {
                             console.log('xhr error occurred');
                         });
@@ -106,7 +116,16 @@
                 // フラグメントが正常にロードされた時のイベント
                 hls.on(Hls.Events.FRAG_LOADED, function() {
                     lastDataReceived = Date.now();
-                    // console.log("Fragment loaded, updating timestamp");
+                });
+                
+                // フラグメントデコード時もタイムスタンプ更新
+                hls.on(Hls.Events.FRAG_DECODED, function() {
+                    lastDataReceived = Date.now();
+                });
+                
+                // レベル読み込み時もタイムスタンプ更新
+                hls.on(Hls.Events.LEVEL_LOADED, function() {
+                    lastDataReceived = Date.now();
                 });
 
                 hls.on(Hls.Events.ERROR, function(event, data) {
@@ -185,7 +204,7 @@
                         const bufferedTime = bufferedEnd - video.currentTime;
                         
                         // バッファリング時間が極端に短い場合はストリームが詰まっている可能性
-                        if (bufferedTime < 0.5 && video.readyState < 4) {
+                        if (bufferedTime < 1.0 && video.readyState < 4) {
                             console.log(`Insufficient buffer (${bufferedTime.toFixed(2)}s), may be stalling`);
                             updateStreamStatus('バッファリング中...');
                         }
