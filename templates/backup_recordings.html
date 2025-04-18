@@ -12,50 +12,224 @@
         <nav>
             <ul>
                 <li><a href="/system/cam/">Top</a></li>
+                <li><a href="/system/cam/record/">録画データ</a></li>
                 <li><a href="/system/cam/backup/">バックアップ録画一覧</a></li>
             </ul>
         </nav>
+        
+        <!-- フィルタリングコントロール追加 -->
+        <div class="filter-controls">
+            <input type="text" id="search-input" placeholder="ファイル名で検索..." class="search-box">
+            <select id="camera-filter" class="filter-select">
+                <option value="all">すべてのカメラ</option>
+                {% for camera_id, files in recordings.items() %}
+                    <option value="{{ camera_id }}">{{ camera_names.get(camera_id, 'カメラ ' + camera_id) }}</option>
+                {% endfor %}
+            </select>
+            <button id="refresh-btn" class="refresh-button">更新</button>
+        </div>
+        
         <div class="recordings-flex">
-            {% for camera_id, files in recordings.items() %}
-            <div class="camera-section">
-                <div class="camera-header">
-                    <h2>{{ camera_names.get(camera_id, 'カメラ ' + camera_id) }}</h2>
-                </div>
-                {% if files %}
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ファイル名</th>
-                            <th>録画日時</th>
-                            <th>サイズ</th>
-                            <th>アクション</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for file in files %}
-                        <tr>
-                            <td>{{ file.filename }}</td>
-                            <td class="date-cell">{{ file.date.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-                            <td class="size-cell">{{ '{:.1f}'.format(file.size / 1024 / 1024) }} MB</td>
-                            <td>
-                                <a href="/system/cam/backup/{{ camera_id }}/{{ file.filename }}" 
-                                class="video-link" 
-                                target="_blank">再生</a>
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-                {% else %}
-                <p class="no-recordings">録画ファイルが見つかりません</p>
-                {% endif %}
-            </div>
-            {% endfor %}
             {% if not recordings %}
-            <p class="no-recordings">バックアップフォルダにカメラの録画ファイルが見つかりません。</p>
+                <div class="no-recordings-message">バックアップフォルダにカメラの録画ファイルが見つかりません。</div>
             {% endif %}
+            
+            {% for camera_id, files in recordings.items() %}
+                <div class="camera-section" data-camera-id="{{ camera_id }}">
+                    <div class="camera-header">
+                        <h2>{{ camera_names.get(camera_id, 'カメラ ' + camera_id) }}</h2>
+                        <div class="file-count">{{ files|length }}ファイル</div>
+                    </div>
+                    
+                    {% if files %}
+                        <table class="recordings-table">
+                            <thead>
+                                <tr>
+                                    <th>ファイル名</th>
+                                    <th>録画日時</th>
+                                    <th>サイズ</th>
+                                    <th>状態</th>
+                                    <th>アクション</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for file in files %}
+                                    <tr class="recording-item" data-filename="{{ file.filename }}">
+                                        <td class="filename-cell">{{ file.filename }}</td>
+                                        <td class="date-cell">{{ file.date.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                                        <td class="size-cell">{{ '{:.1f}'.format(file.size / 1024 / 1024) }} MB</td>
+                                        <td class="status-cell file-status" data-path="/system/cam/backup/{{ camera_id }}/{{ file.filename }}">確認中...</td>
+                                        <td class="action-cell">
+                                            <a href="/system/cam/backup/{{ camera_id }}/{{ file.filename }}" 
+                                               class="play-btn" 
+                                               target="_blank" 
+                                               title="新しいウィンドウで再生">再生</a>
+                                            <button class="download-btn" 
+                                                    data-path="/system/cam/backup/{{ camera_id }}/{{ file.filename }}" 
+                                                    title="ダウンロード">保存</button>
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    {% else %}
+                        <p class="no-recordings">録画ファイルが見つかりません</p>
+                    {% endif %}
+                </div>
+            {% endfor %}
         </div>
         <footer>&nbsp;&nbsp;Copyright&copy;&nbsp;&nbsp;2024&nbsp;&nbsp;株式会社&nbsp;共立電機製作所&nbsp;&nbsp;All&nbsp;rights&nbsp;reserved.</footer>
     </div>
+    
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // ファイル状態を確認して表示
+            document.querySelectorAll('.file-status').forEach(function(element) {
+                const filePath = element.getAttribute('data-path');
+                
+                // 存在チェックと状態確認のためにHEADリクエスト
+                fetch(filePath, { method: 'HEAD' })
+                    .then(response => {
+                        if (response.ok) {
+                            // ファイルサイズの確認
+                            const size = response.headers.get('Content-Length');
+                            if (size && parseInt(size) > 1024 * 10) { // 10KB以上
+                                element.textContent = '正常';
+                                element.classList.add('status-ok');
+                            } else {
+                                element.textContent = '小さいファイル';
+                                element.classList.add('status-warning');
+                                element.parentElement.classList.add('warning-row');
+                            }
+                        } else {
+                            element.textContent = 'エラー';
+                            element.classList.add('status-error');
+                            element.parentElement.classList.add('error-row');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error checking file:', error);
+                        element.textContent = 'エラー';
+                        element.classList.add('status-error');
+                        element.parentElement.classList.add('error-row');
+                    });
+            });
+            
+            // 検索機能
+            const searchInput = document.getElementById('search-input');
+            if (searchInput) {
+                searchInput.addEventListener('input', filterRecordings);
+            }
+            
+            // カメラフィルター
+            const cameraFilter = document.getElementById('camera-filter');
+            if (cameraFilter) {
+                cameraFilter.addEventListener('change', filterRecordings);
+            }
+            
+            // 更新ボタン
+            const refreshBtn = document.getElementById('refresh-btn');
+            if (refreshBtn) {
+                refreshBtn.addEventListener('click', function() {
+                    location.reload();
+                });
+            }
+            
+            // ダウンロードボタン
+            document.querySelectorAll('.download-btn').forEach(function(button) {
+                button.addEventListener('click', function() {
+                    const filePath = this.getAttribute('data-path');
+                    if (filePath) {
+                        // ファイル名を取得
+                        const fileName = filePath.split('/').pop();
+                        
+                        // ダウンロードリンクを作成
+                        const downloadLink = document.createElement('a');
+                        downloadLink.href = filePath;
+                        downloadLink.download = fileName; // ダウンロード時のファイル名
+                        downloadLink.style.display = 'none';
+                        
+                        // リンクをクリック
+                        document.body.appendChild(downloadLink);
+                        downloadLink.click();
+                        
+                        // クリーンアップ
+                        setTimeout(function() {
+                            document.body.removeChild(downloadLink);
+                        }, 100);
+                    }
+                });
+            });
+            
+            // 初回フィルター適用
+            filterRecordings();
+        });
+        
+        // 録画ファイルのフィルタリング
+        function filterRecordings() {
+            const searchInput = document.getElementById('search-input');
+            const cameraFilter = document.getElementById('camera-filter');
+            
+            if (!searchInput || !cameraFilter) return;
+            
+            const searchText = searchInput.value.toLowerCase();
+            const selectedCamera = cameraFilter.value;
+            
+            // カメラセクションをフィルタリング
+            document.querySelectorAll('.camera-section').forEach(function(section) {
+                const cameraId = section.getAttribute('data-camera-id');
+                
+                // カメラフィルター適用
+                if (selectedCamera !== 'all' && cameraId !== selectedCamera) {
+                    section.style.display = 'none';
+                    return;
+                } else {
+                    section.style.display = '';
+                }
+                
+                // ファイル名検索フィルター適用
+                let visibleCount = 0;
+                section.querySelectorAll('.recording-item').forEach(function(item) {
+                    const filename = item.getAttribute('data-filename').toLowerCase();
+                    
+                    if (searchText && !filename.includes(searchText)) {
+                        item.style.display = 'none';
+                    } else {
+                        item.style.display = '';
+                        visibleCount++;
+                    }
+                });
+                
+                // 表示件数の更新
+                const fileCountEl = section.querySelector('.file-count');
+                if (fileCountEl) {
+                    const totalFiles = section.querySelectorAll('.recording-item').length;
+                    if (visibleCount < totalFiles) {
+                        fileCountEl.textContent = `${visibleCount} / ${totalFiles}ファイル`;
+                    } else {
+                        fileCountEl.textContent = `${totalFiles}ファイル`;
+                    }
+                }
+                
+                // 該当ファイルがない場合のメッセージ表示
+                const noFilesMsg = section.querySelector('.no-recordings');
+                const recordingsTable = section.querySelector('.recordings-table');
+                
+                if (recordingsTable && noFilesMsg) {
+                    if (visibleCount === 0 && searchText) {
+                        noFilesMsg.style.display = 'block';
+                        noFilesMsg.textContent = `"${searchText}" に一致するファイルはありません`;
+                        recordingsTable.style.display = 'none';
+                    } else if (visibleCount === 0) {
+                        noFilesMsg.style.display = 'block';
+                        recordingsTable.style.display = 'none';
+                    } else {
+                        noFilesMsg.style.display = 'none';
+                        recordingsTable.style.display = '';
+                    }
+                }
+            });
+        }
+    </script>
 </body>
 </html>
