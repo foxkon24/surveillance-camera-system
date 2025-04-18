@@ -534,11 +534,11 @@ def start_ffmpeg_process(command, log_path=None, high_priority=True):
         if process.poll() is not None:
             return_code = process.poll()
             stderr_output = ""
-            if process.stderr:
-                try:
+            try:
+                if process.stderr:
                     stderr_output = process.stderr.read().decode('utf-8', errors='replace')
-                except:
-                    stderr_output = "Could not read stderr"
+            except:
+                stderr_output = "Could not read stderr"
             
             logging.error(f"FFmpeg process terminated immediately with code {return_code}: {stderr_output}")
             # プロセスが即座に終了した場合はNoneを返す
@@ -692,12 +692,14 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_filename, segment_time
     
     return [
         'ffmpeg',
+        '-y',                                # 既存ファイルの上書き（先頭に配置して確実に適用）
         '-rtsp_transport', 'tcp',            # RTSPトランスポートにTCPを使用
         '-buffer_size', '32768k',            # バッファサイズを増加
         '-fflags', '+genpts+nobuffer+igndts+flush_packets',  # フラグを追加して安定性向上
         '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理改善
         '-re',                               # リアルタイムで読み込み
         '-rw_timeout', '5000000',            # タイムアウト5秒（マイクロ秒単位）
+        '-stimeout', '5000000',              # ソケットタイムアウト5秒（マイクロ秒単位）
         '-i', rtsp_url,                      # 入力ソース
         '-reset_timestamps', '1',            # タイムスタンプをリセット
         '-vsync', 'passthrough',             # タイムスタンプを保持
@@ -742,11 +744,13 @@ def get_ffmpeg_record_command(rtsp_url, output_path):
     """
     return [
         'ffmpeg',
+        '-y',                                # 既存ファイルの上書き（先頭に配置）
         '-rtsp_transport', 'tcp',             # TCPトランスポートを使用
         '-buffer_size', '32768k',             # バッファサイズを大幅に増加
         '-fflags', '+genpts+nobuffer+igndts', # フラグ追加
         '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
         '-rw_timeout', '5000000',             # RTSP接続タイムアウト（マイクロ秒）
+        '-stimeout', '5000000',               # ソケットタイムアウト（マイクロ秒）
         '-i', rtsp_url,
         '-reset_timestamps', '1',             # タイムスタンプをリセット
         '-vsync', 'passthrough',              # ビデオ同期調整
@@ -768,6 +772,5 @@ def get_ffmpeg_record_command(rtsp_url, output_path):
         '-max_delay', '500000',               # 最大遅延時間（マイクロ秒）
         '-max_muxing_queue_size', '1024',     # 多重化キューサイズを増加
         '-movflags', '+faststart+write_colr', # ファストスタートフラグを設定
-        '-y',                                 # 既存のファイルを上書き
         output_path
     ]

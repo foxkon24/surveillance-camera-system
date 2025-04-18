@@ -180,21 +180,28 @@ def restart_all_streams_endpoint():
         # すべてのカメラのストリームを再開
         cameras = camera_utils.read_config()
         success = True
+        failed_cameras = []
         
         for camera in cameras:
             try:
                 result = streaming.get_or_start_streaming(camera)
                 if not result:
                     success = False
+                    failed_cameras.append(camera['id'])
                     logging.error(f"Failed to restart stream for camera {camera['id']}")
             except Exception as e:
                 success = False
+                failed_cameras.append(camera['id'])
                 logging.error(f"Error restarting stream for camera {camera['id']}: {e}")
         
         if success:
             return jsonify({"status": "success", "message": "All streams restarted"}), 200
         else:
-            return jsonify({"status": "partial", "message": "Some streams failed to restart"}), 207
+            return jsonify({
+                "status": "partial", 
+                "message": "Some streams failed to restart", 
+                "failed_cameras": failed_cameras
+            }), 207
             
     except Exception as e:
         logging.error(f"Error restarting all streams: {e}")
@@ -251,7 +258,7 @@ def stop_all_recordings_route():
         logging.error(f"Failed to stop all recordings: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route('/stop_all_streaming', methods=['POST'])
+@app.route('/system/cam/stop_all_streaming', methods=['POST'])
 def stop_all_streaming_route():
     """すべてのカメラのストリーミングを停止するAPI"""
     try:
@@ -310,6 +317,17 @@ def index():
             logging.warning("No cameras found in configuration")
             return render_template('index.html', cameras=[], error="カメラが設定されていません。設定ファイルを確認してください。")
 
+        # 各カメラの一時ディレクトリが存在することを確認
+        for camera in cameras:
+            camera_id = camera['id']
+            camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
+            if not os.path.exists(camera_tmp_dir):
+                try:
+                    os.makedirs(camera_tmp_dir, exist_ok=True)
+                    logging.info(f"Created directory for camera {camera_id}: {camera_tmp_dir}")
+                except Exception as e:
+                    logging.error(f"Failed to create directory for camera {camera_id}: {e}")
+        
         # ここでカメラの初期化を行わない（ページ表示後にJSで行う）
         # カメラの初期化処理は、Webページのロード後にJavaScriptから行うようにする
         

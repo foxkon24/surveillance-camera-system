@@ -37,20 +37,20 @@ connection_error_counts = {}
 # 最大エラー回数（これを超えるとより長い待機時間になる）
 MAX_ERROR_COUNT = 5
 # 再試行遅延設定
-MIN_RETRY_DELAY = 10  # 最小再試行遅延（秒）を短縮して頻繁に試行
-MAX_RETRY_DELAY = 60  # 最大再試行遅延（秒）を短縮
+MIN_RETRY_DELAY = 5  # 最小再試行遅延（秒）をさらに短縮して頻繁に試行
+MAX_RETRY_DELAY = 30  # 最大再試行遅延（秒）を短縮
 # 適応的バックオフのための基本係数
-BACKOFF_FACTOR = 1.2  # 緩やかに増加させる
+BACKOFF_FACTOR = 1.1  # より緩やかに増加させる
 # HLSファイルチェックの最大試行回数
-MAX_HLS_CHECK_ATTEMPTS = 20  # 増加
+MAX_HLS_CHECK_ATTEMPTS = 30  # さらに増加
 # ストリーミング開始時の初期化待機時間（秒）
-STREAM_INIT_WAIT = 3  # 短縮
+STREAM_INIT_WAIT = 5  # 待機時間を増加
 # プロセスの復元力を高めるためのリトライロック
 retry_locks = {}
 # 各カメラの最終再起動時間を追跡
 last_restart_time = {}
 # 最小再起動間隔（秒）- 頻繁すぎる再起動を防ぐ
-MIN_RESTART_INTERVAL = 15  # 短縮
+MIN_RESTART_INTERVAL = 10  # さらに短縮
 # クリーンアップログの間隔（秒）
 CLEANUP_LOG_INTERVAL = 300  # 5分
 last_cleanup_log_time = time.time()
@@ -128,6 +128,15 @@ def get_or_start_streaming(camera):
             # 一時ディレクトリの確認と作成
             camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
             fs_utils.ensure_directory_exists(camera_tmp_dir)
+            
+            # ディレクトリのアクセス権を明示的に設定（多くの環境で問題となる）
+            try:
+                if os.name != 'nt':  # Windowsではない場合
+                    os.chmod(camera_tmp_dir, 0o777)  # 全ユーザーに読み書き実行権限を付与
+                logging.info(f"Set directory permissions for camera {camera_id}: {camera_tmp_dir}")
+            except Exception as e:
+                logging.warning(f"Failed to set directory permissions for camera {camera_id}: {e}")
+                
             # ディレクトリ存在確認フラグを設定
             tmp_dir_checked[camera_id] = True
 
@@ -147,22 +156,35 @@ def get_or_start_streaming(camera):
             logging.info(f"Checking RTSP connection for camera {camera_id}: {camera['rtsp_url']}")
             connection_successful = False
             connection_attempts = 0
-            max_connection_attempts = 3  # 最大試行回数
+            max_connection_attempts = 5  # 最大試行回数を増加
+            rtsp_error = None
 
             while not connection_successful and connection_attempts < max_connection_attempts:
-                connection_successful = ffmpeg_utils.check_rtsp_connection(camera['rtsp_url'])
-                connection_attempts += 1
-                
-                if not connection_successful and connection_attempts < max_connection_attempts:
-                    logging.warning(f"RTSP connection attempt {connection_attempts} failed for camera {camera_id}, retrying...")
+                try:
+                    connection_successful = ffmpeg_utils.check_rtsp_connection(camera['rtsp_url'])
+                    connection_attempts += 1
+                    
+                    if not connection_successful and connection_attempts < max_connection_attempts:
+                        logging.warning(f"RTSP connection attempt {connection_attempts} failed for camera {camera_id}, retrying...")
+                        time.sleep(2)  # 再試行前に待機
+                except Exception as e:
+                    rtsp_error = str(e)
+                    logging.error(f"Error checking RTSP connection for camera {camera_id}: {e}")
+                    connection_attempts += 1
                     time.sleep(2)  # 再試行前に待機
             
             if not connection_successful:
-                logging.warning(f"Failed to connect to RTSP stream for camera {camera_id}: {camera['rtsp_url']} after {max_connection_attempts} attempts")
+                error_message = f"Failed to connect to RTSP stream for camera {camera_id}: {camera['rtsp_url']} after {max_connection_attempts} attempts"
+                if rtsp_error:
+                    error_message += f" (Error: {rtsp_error})"
+                logging.warning(error_message)
+                
                 # 接続エラー回数を増加
                 connection_error_counts[camera_id] = connection_error_counts.get(camera_id, 0) + 1
                 camera_connection_status[camera_id] = 2  # エラー状態
-                return False
+                
+                # それでも続行（カメラが一時的にオフラインでも再接続を試みるため）
+                logging.info(f"Will attempt to start streaming for camera {camera_id} despite connection issues")
             else:
                 # 接続成功したらエラーカウントをリセット
                 logging.info(f"Successfully connected to RTSP stream for camera {camera_id}")
@@ -172,6 +194,24 @@ def get_or_start_streaming(camera):
             # ディレクトリと権限の確認
             logging.info(f"Ensuring tmp directory exists and has correct permissions: {camera_tmp_dir}")
             fs_utils.ensure_directory_exists(camera_tmp_dir)
+            
+            # 明示的に書き込み権限をテスト
+            try:
+                test_file = os.path.join(camera_tmp_dir, "_test_write.tmp")
+                with open(test_file, 'w') as f:
+                    f.write("test")
+                if os.path.exists(test_file):
+                    os.remove(test_file)
+                    logging.info(f"Write test successful for directory: {camera_tmp_dir}")
+            except Exception as e:
+                logging.error(f"Write test failed for directory: {camera_tmp_dir}. Error: {e}")
+                # 権限エラーが発生した場合は権限を修正
+                try:
+                    if os.name != 'nt':  # Windowsではない場合
+                        os.chmod(camera_tmp_dir, 0o777)  # 全ユーザーに読み書き実行権限を付与
+                        logging.info(f"Applied chmod 777 to directory: {camera_tmp_dir}")
+                except Exception as chmod_err:
+                    logging.error(f"Failed to chmod directory: {chmod_err}")
             
             # セグメントパス - この場合はファイル名のみを指定し、相対パスにする
             segment_filename = f"{camera_id}_%03d.ts"
@@ -193,7 +233,13 @@ def get_or_start_streaming(camera):
             
             if process is None:
                 logging.error(f"Failed to start FFmpeg process for camera {camera_id}")
-                return False
+                # ただちに再試行
+                time.sleep(2)
+                process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command, log_path=log_path)
+                
+                if process is None:
+                    logging.error(f"Second attempt to start FFmpeg process for camera {camera_id} also failed")
+                    return False
                 
             # プロセス情報を保存
             streaming_processes[camera_id] = {
@@ -215,6 +261,17 @@ def get_or_start_streaming(camera):
                 m3u8_last_size[camera_id] = 0
                 logging.info(f"m3u8 file not found initially, will be created by FFmpeg")
 
+            # プロセスが正常に起動したかを確認
+            if process.poll() is not None:
+                return_code = process.poll()
+                stderr = ""
+                try:
+                    stderr = process.stderr.read().decode('utf-8', errors='ignore') if process.stderr else ""
+                except Exception:
+                    pass
+                logging.error(f"FFmpeg process terminated immediately with code {return_code}: {stderr}")
+                return False
+
             # 監視スレッドを開始
             monitor_thread = threading.Thread(
                 target=monitor_streaming_process,
@@ -233,13 +290,24 @@ def get_or_start_streaming(camera):
 
             # HLSファイルが作成されるまで待機
             wait_count = 0
-            max_wait = STREAM_INIT_WAIT  # 3秒
+            max_wait = STREAM_INIT_WAIT  # 5秒
             while wait_count < max_wait:
                 if os.path.exists(hls_path) and os.path.getsize(hls_path) > 0:
                     logging.info(f"HLS file created successfully: {hls_path}")
                     return True
                 wait_count += 1
                 time.sleep(1)
+                
+                # プロセスが既に終了していないか確認
+                if process.poll() is not None:
+                    return_code = process.poll()
+                    stderr = ""
+                    try:
+                        stderr = process.stderr.read().decode('utf-8', errors='ignore') if process.stderr else ""
+                    except Exception:
+                        pass
+                    logging.error(f"FFmpeg process terminated during initialization with code {return_code}: {stderr}")
+                    return False
                 
             # HLSファイルがまだ作成されていなくても、プロセスが実行中なら成功と見なす
             if process.poll() is None:
@@ -267,6 +335,11 @@ def cleanup_streaming_files(camera_id):
     try:
         camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
         if not os.path.exists(camera_tmp_dir):
+            try:
+                os.makedirs(camera_tmp_dir, exist_ok=True)
+                logging.info(f"Created tmp directory for camera {camera_id}: {camera_tmp_dir}")
+            except Exception as e:
+                logging.error(f"Failed to create tmp directory for camera {camera_id}: {e}")
             return
             
         hls_path = os.path.join(camera_tmp_dir, f"{camera_id}.m3u8")
@@ -499,6 +572,14 @@ def monitor_hls_updates(camera_id):
         if camera_id not in streaming_processes or not streaming_processes.get(camera_id):
             logging.warning(f"Streaming process for camera {camera_id} no longer exists during initial wait")
             return
+        
+        process_info = streaming_processes.get(camera_id)
+        if process_info and process_info.get('process'):
+            process = process_info.get('process')
+            # プロセスが終了していたら待機を終了
+            if process.poll() is not None:
+                logging.warning(f"Streaming process for camera {camera_id} has terminated during initial wait")
+                return
     
     if wait_count >= max_wait and (not os.path.exists(hls_path) or os.path.getsize(hls_path) == 0):
         logging.error(f"HLS file not created for camera {camera_id} after {max_wait} seconds, restarting")
@@ -892,10 +973,11 @@ def stop_all_streaming():
         
         for camera_id in camera_ids:
             try:
-                result = stop_streaming(camera_id)
-                if not result:
-                    success = False
-                    logging.error(f"Failed to stop streaming for camera {camera_id}")
+                if streaming_processes[camera_id]: # Noneでないことを確認
+                    result = stop_streaming(camera_id)
+                    if not result:
+                        success = False
+                        logging.error(f"Failed to stop streaming for camera {camera_id}")
             except Exception as e:
                 success = False
                 logging.error(f"Error stopping streaming for camera {camera_id}: {e}")
@@ -944,6 +1026,15 @@ def initialize_streaming():
         camera_tmp_dir = os.path.join(config.TMP_PATH, camera['id'])
         try:
             fs_utils.ensure_directory_exists(camera_tmp_dir)
+            
+            # Windowsでなければ権限を明示的に設定
+            if os.name != 'nt':  # Windowsではない場合
+                try:
+                    os.chmod(camera_tmp_dir, 0o777)  # 全ユーザーに読み書き実行権限を付与
+                    logging.info(f"Set directory permissions for camera {camera['id']}: {camera_tmp_dir}")
+                except Exception as e:
+                    logging.warning(f"Failed to set directory permissions for camera {camera['id']}: {e}")
+            
             cleanup_streaming_files(camera['id'])
             tmp_dir_checked[camera['id']] = True
         except Exception as e:
