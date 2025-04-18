@@ -25,9 +25,9 @@ hls_last_update = {}
 # m3u8ファイルの前回のサイズを追跡
 m3u8_last_size = {}
 # 健全性チェックの間隔（秒）
-HEALTH_CHECK_INTERVAL = 10  # より頻繁に確認
+HEALTH_CHECK_INTERVAL = 5  # より頻繁に確認するために短縮
 # ファイル更新タイムアウト（秒）- この時間以上更新がない場合は問題と判断
-HLS_UPDATE_TIMEOUT = 20  # タイムアウト値を最適化
+HLS_UPDATE_TIMEOUT = 15  # タイムアウト値を最適化
 # カメラの接続状態を追跡
 camera_connection_status = {}  # 0=未接続, 1=接続中, 2=エラー
 # カメラごとの最後の接続試行時間
@@ -37,20 +37,20 @@ connection_error_counts = {}
 # 最大エラー回数（これを超えるとより長い待機時間になる）
 MAX_ERROR_COUNT = 5
 # 再試行遅延設定
-MIN_RETRY_DELAY = 15  # 最小再試行遅延（秒）
-MAX_RETRY_DELAY = 120  # 最大再試行遅延（秒）
+MIN_RETRY_DELAY = 10  # 最小再試行遅延（秒）を短縮して頻繁に試行
+MAX_RETRY_DELAY = 60  # 最大再試行遅延（秒）を短縮
 # 適応的バックオフのための基本係数
-BACKOFF_FACTOR = 1.5
+BACKOFF_FACTOR = 1.2  # 緩やかに増加させる
 # HLSファイルチェックの最大試行回数
-MAX_HLS_CHECK_ATTEMPTS = 15  # 増加
+MAX_HLS_CHECK_ATTEMPTS = 20  # 増加
 # ストリーミング開始時の初期化待機時間（秒）
-STREAM_INIT_WAIT = 5  # 少し長く待機
+STREAM_INIT_WAIT = 3  # 短縮
 # プロセスの復元力を高めるためのリトライロック
 retry_locks = {}
 # 各カメラの最終再起動時間を追跡
 last_restart_time = {}
 # 最小再起動間隔（秒）- 頻繁すぎる再起動を防ぐ
-MIN_RESTART_INTERVAL = 30
+MIN_RESTART_INTERVAL = 15  # 短縮
 # クリーンアップログの間隔（秒）
 CLEANUP_LOG_INTERVAL = 300  # 5分
 last_cleanup_log_time = time.time()
@@ -143,12 +143,22 @@ def get_or_start_streaming(camera):
             # プロセス終了を待つ
             time.sleep(2)  
 
-            # RTSPストリームの接続確認
+            # RTSPストリームの接続確認 - 重要な部分なので複数回試行
             logging.info(f"Checking RTSP connection for camera {camera_id}: {camera['rtsp_url']}")
-            connection_successful = ffmpeg_utils.check_rtsp_connection(camera['rtsp_url'])
+            connection_successful = False
+            connection_attempts = 0
+            max_connection_attempts = 3  # 最大試行回数
+
+            while not connection_successful and connection_attempts < max_connection_attempts:
+                connection_successful = ffmpeg_utils.check_rtsp_connection(camera['rtsp_url'])
+                connection_attempts += 1
+                
+                if not connection_successful and connection_attempts < max_connection_attempts:
+                    logging.warning(f"RTSP connection attempt {connection_attempts} failed for camera {camera_id}, retrying...")
+                    time.sleep(2)  # 再試行前に待機
             
             if not connection_successful:
-                logging.warning(f"Failed to connect to RTSP stream for camera {camera_id}: {camera['rtsp_url']}")
+                logging.warning(f"Failed to connect to RTSP stream for camera {camera_id}: {camera['rtsp_url']} after {max_connection_attempts} attempts")
                 # 接続エラー回数を増加
                 connection_error_counts[camera_id] = connection_error_counts.get(camera_id, 0) + 1
                 camera_connection_status[camera_id] = 2  # エラー状態
@@ -167,13 +177,13 @@ def get_or_start_streaming(camera):
             segment_filename = f"{camera_id}_%03d.ts"
             
             # HLSストリーミング用FFmpegコマンド生成
-            # セグメント時間を1.5秒に短縮、リスト長を15に増加
+            # セグメント時間を1秒に短縮、リスト長を10に設定
             ffmpeg_command = ffmpeg_utils.get_ffmpeg_hls_command(
                 camera['rtsp_url'], 
                 hls_path,
                 segment_filename,
-                segment_time=1.5,  # セグメント長を短くして応答性を改善
-                list_size=15      # リスト長を増やして安定性を向上
+                segment_time=1.0,  # セグメント長を短く
+                list_size=10       # リスト長を調整
             )
             
             logging.info(f"Starting FFmpeg process with command: {' '.join(ffmpeg_command)}")
@@ -221,9 +231,9 @@ def get_or_start_streaming(camera):
             )
             hls_monitor_thread.start()
 
-            # HLSファイルが作成されるまで少し長く待機
+            # HLSファイルが作成されるまで待機
             wait_count = 0
-            max_wait = STREAM_INIT_WAIT  # 5秒
+            max_wait = STREAM_INIT_WAIT  # 3秒
             while wait_count < max_wait:
                 if os.path.exists(hls_path) and os.path.getsize(hls_path) > 0:
                     logging.info(f"HLS file created successfully: {hls_path}")
@@ -231,8 +241,14 @@ def get_or_start_streaming(camera):
                 wait_count += 1
                 time.sleep(1)
                 
-            logging.warning(f"HLS file not created yet after {max_wait}s wait: {hls_path}, but process is running")
-            return True  # プロセスは開始されているのでTrueを返す
+            # HLSファイルがまだ作成されていなくても、プロセスが実行中なら成功と見なす
+            if process.poll() is None:
+                logging.warning(f"HLS file not created yet after {max_wait}s wait: {hls_path}, but process is running")
+                return True
+            else:
+                # プロセスが終了していれば失敗
+                logging.error(f"FFmpeg process terminated prematurely for camera {camera_id}")
+                return False
 
         except Exception as e:
             logging.error(f"Error starting streaming for camera {camera_id}: {e}")
@@ -473,11 +489,11 @@ def monitor_hls_updates(camera_id):
     
     while wait_count < max_wait:
         if os.path.exists(hls_path) and os.path.getsize(hls_path) > 0:
-            logging.info(f"HLS file created for camera {camera_id} after {wait_count * 2} seconds")
+            logging.info(f"HLS file created for camera {camera_id} after {wait_count} seconds")
             break
         
         wait_count += 1
-        time.sleep(2)
+        time.sleep(1)
         
         # プロセスが終了していたら待機を終了
         if camera_id not in streaming_processes or not streaming_processes.get(camera_id):
@@ -485,7 +501,7 @@ def monitor_hls_updates(camera_id):
             return
     
     if wait_count >= max_wait and (not os.path.exists(hls_path) or os.path.getsize(hls_path) == 0):
-        logging.error(f"HLS file not created for camera {camera_id} after {max_wait * 2} seconds, restarting")
+        logging.error(f"HLS file not created for camera {camera_id} after {max_wait} seconds, restarting")
         restart_streaming(camera_id)
         return
     
@@ -793,7 +809,7 @@ def cleanup_scheduler():
         except Exception as e:
             logging.error(f"Error in cleanup_scheduler: {e}")
 
-        # 30秒待機
+        # 待機
         time.sleep(20)
 
 def rotate_log_files():

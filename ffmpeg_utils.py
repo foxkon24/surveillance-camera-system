@@ -14,20 +14,20 @@ import platform
 import signal
 import shlex
 
-def check_rtsp_connection(rtsp_url, timeout=10):
+def check_rtsp_connection(rtsp_url, timeout=8):
     """
     RTSP接続の可否をチェックする関数
 
     Args:
         rtsp_url (str): チェックするRTSP URL
-        timeout (int): タイムアウト秒数
+        timeout (int): タイムアウト秒数 (短縮)
 
     Returns:
         bool: 接続が成功したかどうか
     """
     try:
         # 接続試行回数の設定
-        max_retries = 3  # 2から3に増加
+        max_retries = 3
         for retry in range(max_retries):
             try:
                 # 長い待機時間に対処するため、リトライごとに異なるタイプの接続テストを試みる
@@ -40,7 +40,7 @@ def check_rtsp_connection(rtsp_url, timeout=10):
                         '-i', rtsp_url,
                         '-show_entries', 'format=duration',
                         '-of', 'default=noprint_wrappers=1:nokey=1',
-                        '-read_intervals', '%+2'  # より短く、速く
+                        '-read_intervals', '%+1'  # より短く
                     ]
                 elif retry == 1:
                     # 2回目の試行: UDPで試みる（一部のカメラはUDPの方が良いパフォーマンス）
@@ -51,7 +51,7 @@ def check_rtsp_connection(rtsp_url, timeout=10):
                         '-i', rtsp_url,
                         '-show_entries', 'format=duration',
                         '-of', 'default=noprint_wrappers=1:nokey=1',
-                        '-read_intervals', '%+3'
+                        '-read_intervals', '%+2'
                     ]
                 else:
                     # 最後の試行: より多くのオプションを追加
@@ -59,12 +59,14 @@ def check_rtsp_connection(rtsp_url, timeout=10):
                         'ffprobe',
                         '-v', 'error',
                         '-rtsp_transport', 'tcp',
-                        # stimeoutは削除、代わりにrw_timeoutを使用
                         '-rw_timeout', '5000000',  # マイクロ秒単位のタイムアウト
+                        '-reconnect', '1',
+                        '-reconnect_streamed', '1',
+                        '-reconnect_delay_max', '5',
                         '-i', rtsp_url,
                         '-show_entries', 'format=duration',
                         '-of', 'default=noprint_wrappers=1:nokey=1',
-                        '-read_intervals', '%+4'
+                        '-read_intervals', '%+3'
                     ]
 
                 # オペレーティングシステムに応じてcreationflagsを設定
@@ -95,7 +97,7 @@ def check_rtsp_connection(rtsp_url, timeout=10):
                     
                     if retry < max_retries - 1:
                         logging.info(f"Retrying RTSP connection ({retry+1}/{max_retries})...")
-                        time.sleep(2)  # 再試行前に少し待機
+                        time.sleep(1)  # 再試行前の待機時間を短縮
                     else:
                         return False
 
@@ -107,7 +109,7 @@ def check_rtsp_connection(rtsp_url, timeout=10):
                 
                 if retry < max_retries - 1:
                     logging.info(f"Retrying after timeout ({retry+1}/{max_retries})...")
-                    time.sleep(2)  # 再試行前に少し待機
+                    time.sleep(1)  # 再試行前の待機時間を短縮
                 else:
                     return False
 
@@ -171,7 +173,7 @@ def kill_ffmpeg_processes(camera_id=None):
                     proc.terminate()
                     logging.info(f"Terminated ffmpeg process with PID: {proc.pid}")
                     # プロセスが終了するのを少し待つ
-                    gone, alive = psutil.wait_procs([proc], timeout=3)
+                    gone, alive = psutil.wait_procs([proc], timeout=2)
                     
                     # 終了しない場合は強制終了
                     if proc in alive:
@@ -307,7 +309,7 @@ def check_audio_stream(rtsp_url):
         if os.name == 'nt':
             creation_flags = subprocess.CREATE_NO_WINDOW
 
-        result = subprocess.run(ffprobe_command, capture_output=True, text=True, timeout=10,
+        result = subprocess.run(ffprobe_command, capture_output=True, text=True, timeout=8,
                               creationflags=creation_flags)
         
         if result.returncode != 0:
@@ -455,7 +457,7 @@ def check_file_integrity(file_path):
         if os.name == 'nt':
             creation_flags = subprocess.CREATE_NO_WINDOW
 
-        result = subprocess.run(ffprobe_command, capture_output=True, text=True, timeout=10, creationflags=creation_flags)
+        result = subprocess.run(ffprobe_command, capture_output=True, text=True, timeout=8, creationflags=creation_flags)
         
         # エラーが発生した場合は整合性チェック失敗
         if result.returncode != 0:
@@ -527,7 +529,7 @@ def start_ffmpeg_process(command, log_path=None, high_priority=True):
 
         logging.info(f"Started FFmpeg process with PID: {process.pid}")
 
-        # プロセスの状態を確認（数秒待って終了したか）
+        # プロセスの状態を確認（1秒待って終了したか）
         time.sleep(1)
         if process.poll() is not None:
             return_code = process.poll()
@@ -669,7 +671,7 @@ def terminate_process(process, timeout=5):
     except Exception as e:
         logging.error(f"Error in terminate_process: {e}")
 
-def get_ffmpeg_hls_command(rtsp_url, output_path, segment_filename, segment_time=1.5, list_size=15):
+def get_ffmpeg_hls_command(rtsp_url, output_path, segment_filename, segment_time=1.0, list_size=10):
     """
     HLSストリーミング用のFFmpegコマンドを生成（安定性向上版）
 
@@ -693,38 +695,38 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_filename, segment_time
         '-rtsp_transport', 'tcp',            # RTSPトランスポートにTCPを使用
         '-buffer_size', '32768k',            # バッファサイズを増加
         '-fflags', '+genpts+nobuffer+igndts+flush_packets',  # フラグを追加して安定性向上
-        '-use_wallclock_as_timestamps', '1',
+        '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理改善
         '-re',                               # リアルタイムで読み込み
-        '-rw_timeout', '5000000',            # タイムアウト5秒（マイクロ秒単位）- stimeoutの代わり
-        '-i', rtsp_url,
-        '-reset_timestamps', '1',
+        '-rw_timeout', '5000000',            # タイムアウト5秒（マイクロ秒単位）
+        '-i', rtsp_url,                      # 入力ソース
+        '-reset_timestamps', '1',            # タイムスタンプをリセット
         '-vsync', 'passthrough',             # タイムスタンプを保持
         '-copyts',                           # タイムスタンプをコピー
         '-avoid_negative_ts', 'make_zero',   # 負のタイムスタンプを回避
-        '-max_delay', '500000',              # 最大遅延500ms
+        '-max_delay', '300000',              # 最大遅延300ms
         '-max_interleave_delta', '0',        # インターリーブデルタを無効に
-        '-reconnect', '1',
-        '-reconnect_at_eof', '1',
-        '-reconnect_streamed', '1',
+        '-reconnect', '1',                   # 再接続を有効化
+        '-reconnect_at_eof', '1',            # EOF時に再接続
+        '-reconnect_streamed', '1',          # ストリーム中も再接続
         '-reconnect_delay_max', '5',         # 最大5秒の再接続遅延
         '-timeout', '5000000',               # タイムアウト5秒（マイクロ秒単位）
-        '-err_detect', 'ignore_err',
-        '-analyzeduration', '2000000',       # 分析時間2秒
-        '-probesize', '10M',                 # プローブサイズを増加
+        '-err_detect', 'ignore_err',         # エラーを検出
+        '-analyzeduration', '1000000',       # 分析時間1秒に短縮
+        '-probesize', '5M',                  # プローブサイズを最適化
         '-thread_queue_size', '32768',       # スレッドキューサイズを増加
         '-c:v', 'copy',                      # ビデオをそのままコピー
         '-c:a', 'aac',                       # 音声はAACに変換
         '-b:a', '128k',
         '-ar', '44100',
         '-ac', '2',
-        '-f', 'hls',
-        '-hls_time', str(segment_time),      # 短いセグメント時間で応答性向上
-        '-hls_list_size', str(list_size),    # リストサイズを増加
-        '-hls_flags', 'delete_segments+append_list+program_date_time+independent_segments+discont_start',  # フラグ追加
-        '-hls_segment_type', 'mpegts',
+        '-f', 'hls',                         # HLS形式で出力
+        '-hls_time', str(segment_time),      # セグメント時間を短く
+        '-hls_list_size', str(list_size),    # リストサイズを最適化
+        '-hls_flags', 'delete_segments+append_list+program_date_time+independent_segments+discont_start',
+        '-hls_segment_type', 'mpegts',       # セグメントタイプ
         '-hls_init_time', '0',               # 初期セグメント時間
-        '-hls_segment_filename', segment_path,
-        output_path
+        '-hls_segment_filename', segment_path, # セグメントファイル名パターン
+        output_path                          # 出力ファイル
     ]
 
 def get_ffmpeg_record_command(rtsp_url, output_path):
@@ -744,7 +746,7 @@ def get_ffmpeg_record_command(rtsp_url, output_path):
         '-buffer_size', '32768k',             # バッファサイズを大幅に増加
         '-fflags', '+genpts+nobuffer+igndts', # フラグ追加
         '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
-        '-rw_timeout', '5000000',             # RTSP接続タイムアウト（マイクロ秒）- stimeoutの代わり
+        '-rw_timeout', '5000000',             # RTSP接続タイムアウト（マイクロ秒）
         '-i', rtsp_url,
         '-reset_timestamps', '1',             # タイムスタンプをリセット
         '-vsync', 'passthrough',              # ビデオ同期調整
