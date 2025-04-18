@@ -59,7 +59,7 @@ tmp_dir_checked = {}
 
 def get_or_start_streaming(camera):
     """
-    既存のストリーミングプロセスを取得するか、新しく開始する
+    既存のストリーミングプロセスを取得するか、新しく開始する（改善版）
 
     Args:
         camera (dict): カメラ情報
@@ -129,7 +129,7 @@ def get_or_start_streaming(camera):
             camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
             fs_utils.ensure_directory_exists(camera_tmp_dir)
             
-            # ディレクトリのアクセス権を明示的に設定（多くの環境で問題となる）
+            # ディレクトリのアクセス権を明示的に設定
             try:
                 if os.name != 'nt':  # Windowsではない場合
                     os.chmod(camera_tmp_dir, 0o777)  # 全ユーザーに読み書き実行権限を付与
@@ -183,7 +183,7 @@ def get_or_start_streaming(camera):
                 connection_error_counts[camera_id] = connection_error_counts.get(camera_id, 0) + 1
                 camera_connection_status[camera_id] = 2  # エラー状態
                 
-                # それでも続行（カメラが一時的にオフラインでも再接続を試みるため）
+                # エラーが続いても進む（カメラが一時的にオフラインでも再接続を試みるため）
                 logging.info(f"Will attempt to start streaming for camera {camera_id} despite connection issues")
             else:
                 # 接続成功したらエラーカウントをリセット
@@ -233,7 +233,7 @@ def get_or_start_streaming(camera):
             
             if process is None:
                 logging.error(f"Failed to start FFmpeg process for camera {camera_id}")
-                # ただちに再試行
+                # 直ちに再試行
                 time.sleep(2)
                 process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command, log_path=log_path)
                 

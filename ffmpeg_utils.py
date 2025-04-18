@@ -673,7 +673,7 @@ def terminate_process(process, timeout=5):
 
 def get_ffmpeg_hls_command(rtsp_url, output_path, segment_filename, segment_time=1.0, list_size=10):
     """
-    HLSストリーミング用のFFmpegコマンドを生成（安定性向上版）
+    HLSストリーミング用のFFmpegコマンドを生成（修正版・互換性向上）
 
     Args:
         rtsp_url (str): RTSPストリームURL
@@ -690,50 +690,30 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_filename, segment_time
     # セグメントファイルの完全パス
     segment_path = os.path.join(output_dir, segment_filename)
     
+    # 簡素化して互換性を向上したコマンド
     return [
         'ffmpeg',
-        '-y',                                # 既存ファイルの上書き（先頭に配置して確実に適用）
+        '-y',                                # 既存ファイルの上書き
         '-rtsp_transport', 'tcp',            # RTSPトランスポートにTCPを使用
         '-buffer_size', '32768k',            # バッファサイズを増加
-        '-fflags', '+genpts+nobuffer+igndts+flush_packets',  # フラグを追加して安定性向上
-        '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理改善
-        '-re',                               # リアルタイムで読み込み
-        '-rw_timeout', '5000000',            # タイムアウト5秒（マイクロ秒単位）
-        '-stimeout', '5000000',              # ソケットタイムアウト5秒（マイクロ秒単位）
+        '-fflags', '+genpts',                # フラグを簡素化
         '-i', rtsp_url,                      # 入力ソース
-        '-reset_timestamps', '1',            # タイムスタンプをリセット
-        '-vsync', 'passthrough',             # タイムスタンプを保持
-        '-copyts',                           # タイムスタンプをコピー
-        '-avoid_negative_ts', 'make_zero',   # 負のタイムスタンプを回避
-        '-max_delay', '300000',              # 最大遅延300ms
-        '-max_interleave_delta', '0',        # インターリーブデルタを無効に
-        '-reconnect', '1',                   # 再接続を有効化
-        '-reconnect_at_eof', '1',            # EOF時に再接続
-        '-reconnect_streamed', '1',          # ストリーム中も再接続
-        '-reconnect_delay_max', '5',         # 最大5秒の再接続遅延
-        '-timeout', '5000000',               # タイムアウト5秒（マイクロ秒単位）
-        '-err_detect', 'ignore_err',         # エラーを検出
-        '-analyzeduration', '1000000',       # 分析時間1秒に短縮
-        '-probesize', '5M',                  # プローブサイズを最適化
-        '-thread_queue_size', '32768',       # スレッドキューサイズを増加
+        '-vsync', '0',                       # ビデオ同期を無効化
         '-c:v', 'copy',                      # ビデオをそのままコピー
         '-c:a', 'aac',                       # 音声はAACに変換
-        '-b:a', '128k',
-        '-ar', '44100',
-        '-ac', '2',
+        '-b:a', '128k',                      # 音声ビットレート
+        '-ar', '44100',                      # サンプリングレート
         '-f', 'hls',                         # HLS形式で出力
-        '-hls_time', str(segment_time),      # セグメント時間を短く
-        '-hls_list_size', str(list_size),    # リストサイズを最適化
-        '-hls_flags', 'delete_segments+append_list+program_date_time+independent_segments+discont_start',
-        '-hls_segment_type', 'mpegts',       # セグメントタイプ
-        '-hls_init_time', '0',               # 初期セグメント時間
+        '-hls_time', str(segment_time),      # セグメント時間
+        '-hls_list_size', str(list_size),    # リストサイズ
+        '-hls_flags', 'delete_segments',     # フラグを簡素化
         '-hls_segment_filename', segment_path, # セグメントファイル名パターン
         output_path                          # 出力ファイル
     ]
 
 def get_ffmpeg_record_command(rtsp_url, output_path):
     """
-    録画用のFFmpegコマンドを生成（安定性向上版）
+    録画用のFFmpegコマンドを生成（修正版・互換性向上）
 
     Args:
         rtsp_url (str): RTSPストリームURL
@@ -742,35 +722,18 @@ def get_ffmpeg_record_command(rtsp_url, output_path):
     Returns:
         list: FFmpegコマンドのリスト
     """
+    # 簡素化して互換性を向上したコマンド
     return [
         'ffmpeg',
-        '-y',                                # 既存ファイルの上書き（先頭に配置）
-        '-rtsp_transport', 'tcp',             # TCPトランスポートを使用
-        '-buffer_size', '32768k',             # バッファサイズを大幅に増加
-        '-fflags', '+genpts+nobuffer+igndts', # フラグ追加
-        '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
-        '-rw_timeout', '5000000',             # RTSP接続タイムアウト（マイクロ秒）
-        '-stimeout', '5000000',               # ソケットタイムアウト（マイクロ秒）
-        '-i', rtsp_url,
-        '-reset_timestamps', '1',             # タイムスタンプをリセット
-        '-vsync', 'passthrough',              # ビデオ同期調整
-        '-avoid_negative_ts', 'make_zero',    # 負のタイムスタンプを回避
-        '-reconnect', '1',                    # 接続が切れた場合に再接続を試みる
-        '-reconnect_at_eof', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',          # 最大再接続遅延を5秒に設定
-        '-err_detect', 'ignore_err',          # エラー検出モードを設定
-        '-thread_queue_size', '16384',        # 入力バッファサイズを調整
-        '-analyzeduration', '2000000',        # 入力ストリームの分析時間を2秒に
-        '-probesize', '32M',                  # プローブサイズを調整
-        '-c:v', 'copy',                       # ビデオコーデックをそのままコピー
-        '-c:a', 'aac',                        # 音声コーデックをAACに設定
-        '-b:a', '128k',                       # 音声ビットレート
-        '-ar', '44100',                       # サンプリングレート
-        '-ac', '2',                           # ステレオ音声
-        '-async', '1',                        # 音声の同期モード
-        '-max_delay', '500000',               # 最大遅延時間（マイクロ秒）
-        '-max_muxing_queue_size', '1024',     # 多重化キューサイズを増加
-        '-movflags', '+faststart+write_colr', # ファストスタートフラグを設定
-        output_path
+        '-y',                                # 既存ファイルの上書き
+        '-rtsp_transport', 'tcp',            # TCPトランスポートを使用
+        '-buffer_size', '32768k',            # バッファサイズを増加
+        '-i', rtsp_url,                      # 入力ソース
+        '-c:v', 'copy',                      # ビデオをそのままコピー
+        '-c:a', 'aac',                       # 音声をAACに変換
+        '-b:a', '128k',                      # 音声ビットレート
+        '-ar', '44100',                      # サンプリングレート
+        '-ac', '2',                          # ステレオ音声
+        '-movflags', '+faststart',           # ファストスタートフラグ
+        output_path                          # 出力ファイル
     ]
