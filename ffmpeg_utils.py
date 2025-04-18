@@ -59,7 +59,8 @@ def check_rtsp_connection(rtsp_url, timeout=10):
                         'ffprobe',
                         '-v', 'error',
                         '-rtsp_transport', 'tcp',
-                        '-stimeout', '5000000',  # マイクロ秒単位のソケットタイムアウト
+                        # stimeoutは削除、代わりにrw_timeoutを使用
+                        '-rw_timeout', '5000000',  # マイクロ秒単位のタイムアウト
                         '-i', rtsp_url,
                         '-show_entries', 'format=duration',
                         '-of', 'default=noprint_wrappers=1:nokey=1',
@@ -122,10 +123,16 @@ def kill_ffprobe_processes():
         # OSに応じて異なる処理
         if os.name == 'nt':
             # Windows
-            subprocess.run('taskkill /F /IM ffprobe.exe', shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            try:
+                subprocess.run('taskkill /F /IM ffprobe.exe', shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            except Exception as e:
+                logging.error(f"Error running taskkill for ffprobe: {e}")
         else:
             # Linux/Mac
-            os.system("pkill -f ffprobe")
+            try:
+                os.system("pkill -f ffprobe")
+            except Exception as e:
+                logging.error(f"Error running pkill for ffprobe: {e}")
     except Exception as e:
         logging.error(f"Error killing ffprobe processes: {e}")
 
@@ -150,12 +157,12 @@ def kill_ffmpeg_processes(camera_id=None):
                         if camera_id:
                             # コマンドラインにカメラIDが含まれているか確認
                             cmdline = proc.info.get('cmdline', [])
-                            cmdline_str = ' '.join(cmdline) if cmdline else ''
+                            cmdline_str = ' '.join([str(cmd) for cmd in cmdline]) if cmdline else ''
                             if camera_id in cmdline_str:
                                 found_processes.append(proc)
                         else:
                             found_processes.append(proc)
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                except (psutil.NoSuchProcess, psutil.AccessDenied, UnicodeDecodeError):
                     continue
                     
             # 見つかったプロセスを終了
@@ -186,7 +193,7 @@ def kill_ffmpeg_processes(camera_id=None):
             try:
                 # tasklist コマンドを実行してffmpegプロセスを検索
                 task_cmd = 'tasklist /FI "IMAGENAME eq ffmpeg.exe" /FO CSV'
-                result = subprocess.check_output(task_cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW).decode()
+                result = subprocess.check_output(task_cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW).decode('cp932', errors='ignore')
                 
                 # CSVフォーマットをパース
                 import csv
@@ -204,7 +211,7 @@ def kill_ffmpeg_processes(camera_id=None):
                             try:
                                 # wmic コマンドでコマンドラインを取得
                                 wmic_cmd = f'wmic process where processid="{pid}" get commandline'
-                                cmdline = subprocess.check_output(wmic_cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW).decode()
+                                cmdline = subprocess.check_output(wmic_cmd, shell=True, creationflags=subprocess.CREATE_NO_WINDOW).decode('cp932', errors='ignore')
                                 
                                 # コマンドラインに特定のカメラIDが含まれているか確認
                                 if camera_id in cmdline:
@@ -688,7 +695,7 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_filename, segment_time
         '-fflags', '+genpts+nobuffer+igndts+flush_packets',  # フラグを追加して安定性向上
         '-use_wallclock_as_timestamps', '1',
         '-re',                               # リアルタイムで読み込み
-        '-stimeout', '5000000',              # RTSPタイムアウト5秒（マイクロ秒単位）
+        '-rw_timeout', '5000000',            # タイムアウト5秒（マイクロ秒単位）- stimeoutの代わり
         '-i', rtsp_url,
         '-reset_timestamps', '1',
         '-vsync', 'passthrough',             # タイムスタンプを保持
@@ -737,7 +744,7 @@ def get_ffmpeg_record_command(rtsp_url, output_path):
         '-buffer_size', '32768k',             # バッファサイズを大幅に増加
         '-fflags', '+genpts+nobuffer+igndts', # フラグ追加
         '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
-        '-stimeout', '5000000',               # RTSP接続タイムアウト（マイクロ秒）
+        '-rw_timeout', '5000000',             # RTSP接続タイムアウト（マイクロ秒）- stimeoutの代わり
         '-i', rtsp_url,
         '-reset_timestamps', '1',             # タイムスタンプをリセット
         '-vsync', 'passthrough',              # ビデオ同期調整

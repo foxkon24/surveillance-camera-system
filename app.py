@@ -277,6 +277,20 @@ def status_route():
         logging.error(f"Failed to get system status: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route('/system/cam/cleanup_old_recordings', methods=['POST'])
+def cleanup_old_recordings_route():
+    """古い録画ファイルを削除するAPI"""
+    try:
+        deleted_count = cleanup_old_recordings()
+        return jsonify({
+            "status": "success", 
+            "message": f"Deleted {deleted_count} old recording files",
+            "deleted_count": deleted_count
+        })
+    except Exception as e:
+        logging.error(f"Failed to cleanup old recordings: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/system/cam/')
 def index():
     """メインページ"""
@@ -296,13 +310,9 @@ def index():
             logging.warning("No cameras found in configuration")
             return render_template('index.html', cameras=[], error="カメラが設定されていません。設定ファイルを確認してください。")
 
-        # カメラの初期化
-        for camera in cameras:
-            streaming.get_or_start_streaming(camera)
-
-        # ストリームの初期化を待つ - 増加
-        time.sleep(3)
-
+        # ここでカメラの初期化を行わない（ページ表示後にJSで行う）
+        # カメラの初期化処理は、Webページのロード後にJavaScriptから行うようにする
+        
         return render_template('index.html', cameras=cameras)
         
     except Exception as e:
@@ -320,12 +330,7 @@ def index_admin():
             logging.warning("No cameras found in configuration")
             return render_template('admin.html', cameras=[], error="カメラが設定されていません。設定ファイルを確認してください。")
             
-        for camera in cameras:
-            streaming.get_or_start_streaming(camera)
-
-        # ストリームの初期化を待つ - 増加
-        time.sleep(3)
-
+        # 初期化の待機時間は削除
         return render_template('admin.html', cameras=cameras)
         
     except Exception as e:
@@ -352,11 +357,7 @@ def index_single():
         camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
         fs_utils.ensure_directory_exists(camera_tmp_dir)
 
-        streaming.get_or_start_streaming(target_camera)
-
-        # ストリームの初期化を待つ - 増加
-        time.sleep(3)
-
+        # カメラの初期化は行わない
         return render_template('single.html', camera=target_camera)
         
     except Exception as e:
@@ -404,12 +405,24 @@ def check_disk_space():
                         logging.warning(f"Critical low disk space for {path}: {free_space_gb:.2f} GB. Performing auto cleanup.")
                         # 古い録画ファイルを削除
                         cleanup_old_recordings()
+                else:
+                    # 容量が十分な場合も記録
+                    if 'disk_space' not in system_status:
+                        system_status['disk_space'] = {}
+                    
+                    system_status['disk_space'][path] = {
+                        'path': path,
+                        'free_space_gb': round(free_space_gb, 2),
+                        'status': 'ok',
+                        'timestamp': time.time()
+                    }
     
     except Exception as e:
         logging.error(f"Error checking disk space: {e}")
 
 def cleanup_old_recordings():
     """古い録画ファイルを自動クリーンアップする"""
+    total_deleted = 0
     try:
         # 録画ディレクトリ内の全カメラのフォルダを確認
         if os.path.exists(config.RECORD_PATH):
@@ -433,6 +446,7 @@ def cleanup_old_recordings():
                             try:
                                 os.remove(file_path)
                                 logging.info(f"Deleted old recording file: {file_path}")
+                                total_deleted += 1
                             except Exception as e:
                                 logging.error(f"Failed to delete file {file_path}: {e}")
         
@@ -458,11 +472,15 @@ def cleanup_old_recordings():
                             try:
                                 os.remove(file_path)
                                 logging.info(f"Deleted old backup file: {file_path}")
+                                total_deleted += 1
                             except Exception as e:
                                 logging.error(f"Failed to delete backup file {file_path}: {e}")
         
+        return total_deleted
+        
     except Exception as e:
         logging.error(f"Error cleaning up old recordings: {e}")
+        return total_deleted
 
 def update_system_status():
     """システム状態情報を更新"""

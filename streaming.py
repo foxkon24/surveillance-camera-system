@@ -54,6 +54,8 @@ MIN_RESTART_INTERVAL = 30
 # クリーンアップログの間隔（秒）
 CLEANUP_LOG_INTERVAL = 300  # 5分
 last_cleanup_log_time = time.time()
+# 一時ディレクトリの存在を確認済みかフラグ
+tmp_dir_checked = {}
 
 def get_or_start_streaming(camera):
     """
@@ -126,6 +128,8 @@ def get_or_start_streaming(camera):
             # 一時ディレクトリの確認と作成
             camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
             fs_utils.ensure_directory_exists(camera_tmp_dir)
+            # ディレクトリ存在確認フラグを設定
+            tmp_dir_checked[camera_id] = True
 
             # ファイルパスの設定
             hls_path = os.path.join(camera_tmp_dir, f"{camera_id}.m3u8")
@@ -899,7 +903,7 @@ def initialize_streaming():
     # グローバル変数の初期化
     global streaming_processes, hls_last_update, m3u8_last_size
     global camera_connection_status, last_connection_attempt, connection_error_counts
-    global retry_locks, last_restart_time, last_cleanup_log_time
+    global retry_locks, last_restart_time, last_cleanup_log_time, tmp_dir_checked
     
     streaming_processes = {}
     hls_last_update = {}
@@ -910,16 +914,25 @@ def initialize_streaming():
     retry_locks = {}
     last_restart_time = {}
     last_cleanup_log_time = time.time()
+    tmp_dir_checked = {}
     
     # 起動時に残っているffmpegプロセスをクリーンアップ
-    ffmpeg_utils.kill_ffmpeg_processes()
+    try:
+        ffmpeg_utils.kill_ffmpeg_processes()
+    except Exception as e:
+        logging.error(f"Error killing ffmpeg processes during initialization: {e}")
     
     # すべてのカメラの一時ディレクトリを確認
     cameras = camera_utils.read_config()
     for camera in cameras:
         camera_tmp_dir = os.path.join(config.TMP_PATH, camera['id'])
-        fs_utils.ensure_directory_exists(camera_tmp_dir)
-        cleanup_streaming_files(camera['id'])
+        try:
+            fs_utils.ensure_directory_exists(camera_tmp_dir)
+            cleanup_streaming_files(camera['id'])
+            tmp_dir_checked[camera['id']] = True
+        except Exception as e:
+            logging.error(f"Error ensuring tmp directory for camera {camera['id']}: {e}")
+            tmp_dir_checked[camera['id']] = False
     
     # クリーンアップスレッドの起動
     cleanup_thread = threading.Thread(target=cleanup_scheduler, daemon=True)

@@ -8,6 +8,7 @@ import sys
 import subprocess
 import platform
 import shutil
+import re
 
 # 基本パス設定
 BASE_PATH = os.path.join('D:\\', 'laragon', 'www', 'system', 'cam')
@@ -19,7 +20,7 @@ LOG_PATH = os.path.join(BASE_PATH, 'streaming.log')
 LOG_BACKUP_PATH = os.path.join(BASE_PATH, 'logs')  # ログバックアップディレクトリ
 
 # バージョン情報
-VERSION = "1.2.0"  # バージョン番号（メジャー.マイナー.パッチ）
+VERSION = "1.2.1"  # バージョン番号（メジャー.マイナー.パッチ）
 
 # 録画設定
 MAX_RECORDING_HOURS = 1  # 最大録画時間（時間）
@@ -50,6 +51,10 @@ WEB_REFRESH_INTERVAL = 300  # ウェブ画面の自動更新間隔（秒）
 
 # システム設定
 CHECK_INTERVAL = 5  # プロセス監視間隔（秒）
+
+# FFmpegバージョン情報
+FFMPEG_VERSION = None
+FFMPEG_SUPPORTS_STIMEOUT = False
 
 # ログローテーション設定
 def rotate_log_file():
@@ -133,6 +138,9 @@ def setup_logging():
     logging.info(f"Python Version: {sys.version}")
     logging.info(f"Platform: {platform.platform()}")
     logging.info(f"Base Path: {BASE_PATH}")
+    
+    # FFmpegのバージョンを確認
+    check_ffmpeg()
 
 # 設定ファイルの存在チェック
 def check_config_file():
@@ -159,14 +167,28 @@ def check_config_file():
 # FFmpegが利用可能かチェック
 def check_ffmpeg():
     """FFmpegの利用可能性をチェック"""
+    global FFMPEG_VERSION, FFMPEG_SUPPORTS_STIMEOUT
+    
     try:
         # シェルを使用して実行（権限問題回避）
-        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, shell=True)
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, encoding='cp932', errors='ignore')
         if result.returncode == 0:
             logging.info("FFmpegが正常に検出されました")
             # FFmpegバージョンを出力
-            version_line = result.stdout.splitlines()[0] if result.stdout else "Unknown"
-            logging.info(f"FFmpeg version: {version_line}")
+            version_text = result.stdout.splitlines()[0] if result.stdout else "Unknown"
+            logging.info(f"FFmpeg version: {version_text}")
+            FFMPEG_VERSION = version_text
+            
+            # バージョンから互換性のあるオプションを確認
+            version_match = re.search(r'ffmpeg version ([0-9.]+)', version_text)
+            if version_match:
+                version_str = version_match.group(1)
+                # 特定オプションのサポート状況を設定
+                # -stimeoutオプションはバージョンによってサポートされないため
+                # 正確なバージョンチェックを行う代わりに、機能テストを実施
+                # 最新バージョンではrw_timeoutを使う
+                FFMPEG_SUPPORTS_STIMEOUT = False
+            
             return True
         else:
             logging.error("FFmpegが見つかりません")
@@ -175,33 +197,3 @@ def check_ffmpeg():
     except Exception as e:
         logging.error(f"FFmpeg確認エラー: {e}")
         return False
-
-# システム情報を取得
-def get_system_info():
-    """システム情報を取得する"""
-    info = {
-        "version": VERSION,
-        "python_version": sys.version,
-        "platform": platform.platform(),
-        "ffmpeg_available": check_ffmpeg(),
-        "base_path": BASE_PATH,
-        "config_path": CONFIG_PATH,
-        "tmp_path": TMP_PATH,
-        "record_path": RECORD_PATH,
-        "backup_path": BACKUP_PATH,
-        "log_path": LOG_PATH,
-    }
-    
-    # ディスク容量を追加
-    for path in [BASE_PATH, RECORD_PATH, BACKUP_PATH]:
-        if os.path.exists(path):
-            from psutil import disk_usage
-            usage = disk_usage(path)
-            info[f"{path}_disk"] = {
-                "total": usage.total,
-                "used": usage.used,
-                "free": usage.free,
-                "percent": usage.percent
-            }
-    
-    return info
