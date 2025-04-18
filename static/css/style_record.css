@@ -13,7 +13,7 @@ body {
 
 .layout-record {
     display: grid;
-    grid-template-rows: 55px 25px 5fr 25px;
+    grid-template-rows: 55px 25px auto 5fr 25px;
     grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr;
     width: 100vw;
     height: 100vh;
@@ -32,7 +32,7 @@ header {
 }
 
 footer {
-    grid-row: 8;
+    grid-row: 5;
     grid-column: 1 / 7;
     display: flex;
     align-items: center;
@@ -79,36 +79,77 @@ a {
     margin-right: 10px;
 }
 
+/* フィルターコントロール */
+.filter-controls {
+    grid-row: 3;
+    grid-column: 1 / 7;
+    display: flex;
+    align-items: center;
+    padding: 15px;
+    background-color: #f0f0f0;
+    border-bottom: 1px solid #ddd;
+    gap: 15px;
+}
+
+.search-box {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.filter-select {
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+    min-width: 200px;
+}
+
+.refresh-button {
+    padding: 8px 15px;
+    background-color: #0066cc;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.refresh-button:hover {
+    background-color: #0052a3;
+}
+
 /* recoridngs */
 .recordings-flex {
-    grid-row: 3;
+    grid-row: 4;
     grid-column: 1 / 7;
     display: flex;
     flex-direction: column;
     flex-wrap: wrap;
-    gap: 5px;
-    padding: 10px;
+    gap: 15px;
+    padding: 15px;
     overflow-y: auto;
-    height: calc(100vh - 130px);
+    height: calc(100vh - 170px);
     box-sizing: border-box;
 }
 
 .camera-section {
-    margin-bottom: 5px;
+    background-color: white;
+    padding: 15px;
+    border-radius: 5px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    margin-bottom: 15px;
 }
 
 .camera-info {
     display: flex;
     gap: 20px;
     align-items: center;
-    margin-bottom: 5px;
-}
-
-.camera-id {
-    font-weight: bold;
-    margin: 0;
-    padding: 5px 0;
-    line-height: 1.2;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
 }
 
 .camera-id, .camera-name {
@@ -116,29 +157,117 @@ a {
     padding: 5px 0;
 }
 
-.file-names {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    margin: 0;
-    padding: 0 0 5px 0;
-    width: 100%;
+.file-count {
+    margin-left: auto;
+    color: #666;
+    font-size: 0.9em;
 }
 
-.file-name {
-    display: inline-block;
+/* 録画データテーブル */
+.recordings-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 5px;
+}
+
+.recordings-table th {
+    background-color: #f8f8f8;
+    padding: 10px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
     white-space: nowrap;
 }
 
-.file-name a {
-    color: black;
-    text-decoration: none;
-    padding: 5px;
+.recordings-table td {
+    padding: 10px;
+    border-bottom: 1px solid #eee;
 }
 
-.file-name a:hover {
-    background-color: #f0f0f0;  /* ホバー時の背景色 */
-    border-radius: 4px;         /* 角を丸く */
+.recordings-table tr:hover {
+    background-color: #f5f5f5;
+}
+
+.filename-cell {
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.date-cell {
+    white-space: nowrap;
+}
+
+.size-cell {
+    text-align: right;
+    white-space: nowrap;
+}
+
+.status-cell {
+    white-space: nowrap;
+}
+
+.action-cell {
+    white-space: nowrap;
+    text-align: center;
+}
+
+/* アクションボタン */
+.play-btn, .download-btn {
+    display: inline-block;
+    padding: 5px 10px;
+    margin: 0 5px;
+    background-color: #0066cc;
+    color: white;
+    border-radius: 4px;
+    text-decoration: none;
+    border: none;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.play-btn:hover, .download-btn:hover {
+    background-color: #0052a3;
+}
+
+/* 状態表示 */
+.status-ok {
+    color: #4CAF50;
+    font-weight: bold;
+}
+
+.status-warning {
+    color: #FFC107;
+    font-weight: bold;
+}
+
+.status-error {
+    color: #F44336;
+    font-weight: bold;
+}
+
+.warning-row {
+    background-color: rgba(255, 193, 7, 0.1);
+}
+
+.error-row {
+    background-color: rgba(244, 67, 54, 0.1);
+}
+
+.small-file {
+    color: #FFC107;
+    font-weight: bold;
+}
+
+/* 録画なしメッセージ */
+.no-recordings-message, .no-recordings, .no-files-message {
+    padding: 20px;
+    text-align: center;
+    color: #666;
+    background-color: #f8f8f8;
+    border-radius: 5px;
+    margin: 15px 0;
+    font-style: italic;
 }
 
 h1, h2, h3, h4, h5, p, ul, ol, li, dl, dt, dd, form, figure, form { margin: 0px; padding: 0px; font-size: 100%; font-weight: normal; }

@@ -13,7 +13,7 @@ body {
 
 .layout {
     display: grid;
-    grid-template-rows: 55px 25px 10% 10% 3fr 25px;
+    grid-template-rows: 55px 25px auto auto 1fr 25px;
     grid-template-columns: 1fr 1fr 1fr 1fr 1fr 1fr;
     width: 100vw;
     height: 100vh;
@@ -32,7 +32,7 @@ header {
 }
 
 footer {
-    grid-row: 8;
+    grid-row: 6;
     grid-column: 1 / 7;
     display: flex;
     align-items: center;
@@ -85,63 +85,172 @@ a {
     grid-column: 1 / 7;
     display: flex;
     flex-wrap: wrap;
-    gap: 5px; /* ボタン間のスペース */
+    gap: 10px; /* ボタン間のスペース */
+    padding: 15px;
     margin-bottom: 5px;
+    background-color: #f0f0f0;
+    border-bottom: 1px solid #ddd;
+}
+
+.control-group {
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    background-color: #fff;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+    min-width: 250px;
+}
+
+.control-group h3 {
+    margin: 0 0 10px 0;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #eee;
+    font-size: 1.1em;
+    color: #333;
 }
 
 .msg {
     grid-row: 4;
     grid-column: 1 / 7;
-    display: grid;
-    grid-template-columns: repeat(3, auto); /* 列のグリッドを設定 */
+    padding: 15px;
     margin: 5px;
     font-size: 1.1em;
     color: #333;
+    background-color: #f9f9f9;
+    border-radius: 5px;
+    border: 1px solid #eee;
+    white-space: pre-line;
 }
 
-.container {
+.system-status {
     grid-row: 5;
     grid-column: 1 / 7;
-    width: 100%;
-    margin: 0 auto;
-    overflow-y: auto; /* 縦スクロールを有効にする */
-    overflow-x: hidden; /* 横スクロールを無効にする */
-    padding: 0 5px;
+    padding: 15px;
+    margin: 5px;
+    overflow-y: auto;
 }
 
-.grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    justify-content: flex-start;
-    padding: 5px;
-}
-
-.camera {
-    flex: 0 0 auto;
-    background: #f5f5f5;
-    padding: 10px;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-}
-
-.camera h4 {
-    margin: 0 0 10px 0;
-    font-size: 1.2em;
+.system-status h3 {
+    margin: 10px 0;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #eee;
     color: #333;
 }
 
-video {
-    width: 100%;
-    height: auto;
-    aspect-ratio: 4/3;
-    background: #000;
-    border-radius: 4px;
+/* カメラ状態グリッド */
+.camera-status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.camera-status {
+    padding: 15px;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+    background-color: #fff;
+}
+
+.camera-status h4 {
+    margin: 0 0 10px 0;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #eee;
+    font-size: 1.1em;
+}
+
+.status-info {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.status-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.status-label {
+    font-weight: bold;
+    color: #666;
+}
+
+.camera-controls {
+    display: flex;
+    justify-content: center;
+    padding-top: 10px;
+    border-top: 1px solid #eee;
+}
+
+/* ディスク容量グリッド */
+.disk-status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.disk-status {
+    padding: 15px;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+    background-color: #fff;
+}
+
+.disk-path {
+    font-weight: bold;
+    margin-bottom: 5px;
+}
+
+/* 状態表示の色分け */
+.status-ok {
+    border-left: 5px solid #4CAF50;
+}
+
+.status-warning {
+    border-left: 5px solid #FFC107;
+}
+
+.status-error {
+    border-left: 5px solid #F44336;
+}
+
+.status-unknown {
+    border-left: 5px solid #9E9E9E;
+}
+
+.status-value.status-ok {
+    color: #4CAF50;
+    border-left: none;
+    font-weight: bold;
+}
+
+.status-value.status-warning {
+    color: #FFC107;
+    border-left: none;
+    font-weight: bold;
+}
+
+.status-value.status-error {
+    color: #F44336;
+    border-left: none;
+    font-weight: bold;
+}
+
+.update-time {
+    color: #666;
+    font-size: 0.9em;
+    text-align: right;
+    margin-top: 20px;
+    font-style: italic;
 }
 
 button {
-    margin: 10px;
-    padding: 10px 20px;
+    margin: 5px;
+    padding: 8px 15px;
     font-size: 14px;
     background-color: #0066cc;
     color: white;
@@ -149,7 +258,6 @@ button {
     border-radius: 4px;
     cursor: pointer;
     transition: background-color 0.3s;
-    height: 50px;
 }
 
 button:hover {
