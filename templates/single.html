@@ -39,6 +39,9 @@
         <footer>&nbsp;&nbsp;Copyright&copy;&nbsp;&nbsp;2024&nbsp;&nbsp;株式会社&nbsp;共立電機製作所&nbsp;&nbsp;All&nbsp;rights&nbsp;reserved.</footer>
     </div>
     <script>
+        // カメラ情報をJSONから安全に読み込み
+        const cameraData = JSON.parse('{{ camera_json|safe }}');
+        
         let hls = null;
         let retryAttempts = 0;
         let lastDataReceived = Date.now();  // データ受信の最終時刻
@@ -159,7 +162,7 @@
                 hls = null;
             }
             
-            const cameraId = '{{ camera.id }}';
+            const cameraId = cameraData.id;
             
             // サーバーにリクエストを送信
             fetch(`/system/cam/restart_stream/${cameraId}`, {
@@ -190,10 +193,10 @@
             location.reload();
         }
 
-        // HLSファイルのチェック - キャッシュを回避
-        async function checkHLSFile() {
+// HLSファイルのチェック - キャッシュを回避
+async function checkHLSFile() {
             try {
-                const cameraId = '{{ camera.id }}';
+                const cameraId = cameraData.id;
                 const timestamp = new Date().getTime();
                 const filePath = `/system/cam/tmp/${cameraId}/${cameraId}.m3u8?_=${timestamp}`;
                 
@@ -210,7 +213,7 @@
         }
 
         async function initializePlayer() {
-            const cameraId = '{{ camera.id }}';
+            const cameraId = cameraData.id;
             const video = document.getElementById('video' + cameraId);
             if (!video) return;
             
@@ -486,7 +489,7 @@
             setInterval(() => {
                 if (!healthCheckActive) return; // 健全性チェックが非アクティブならスキップ
                 
-                const cameraId = '{{ camera.id }}';
+                const cameraId = cameraData.id;
                 const video = document.getElementById('video' + cameraId);
                 if (!video) return;
                 
@@ -628,7 +631,7 @@
                         updateStreamStatus('再開中...', false);
                         
                         // ビデオ要素を取得
-                        const video = document.getElementById('video{{ camera.id }}');
+                        const video = document.getElementById('video' + cameraData.id);
                         if (video) {
                             video.play().catch(e => {
                                 console.error("Resume play failed:", e);

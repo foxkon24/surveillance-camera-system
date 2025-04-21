@@ -82,6 +82,10 @@
     </div>
     
     <script>
+        // カメラデータをJSONに変換する必要はありません。
+        // backup_recordings.htmlは録画リストを動的に表示するだけで、
+        // カメラ固有のJavaScriptは必要ありません。
+        
         document.addEventListener('DOMContentLoaded', function() {
             // ファイル状態を確認して表示
             document.querySelectorAll('.file-status').forEach(function(element) {

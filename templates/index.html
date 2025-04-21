@@ -51,15 +51,8 @@
 
     <!-- カメラ設定情報をJavaScriptで利用可能にする -->
     <script>
-        // カメラ情報を格納する配列
-        const cameras = [
-            {% for camera in cameras %}
-            {
-                id: "{{ camera.id }}",
-                name: "{{ camera.name }}"
-            }{% if not loop.last %},{% endif %}
-            {% endfor %}
-        ];
+        // カメラ情報を格納する配列 - JSONから安全に読み込み
+        const cameras = JSON.parse('{{ cameras_json|safe }}');
     </script>
 
     <!-- メインJavaScript -->

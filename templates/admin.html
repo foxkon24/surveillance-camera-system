@@ -48,6 +48,9 @@
     </div>
     
     <script>
+        // カメラ情報をJSONから安全に読み込み
+        const cameras = JSON.parse('{{ cameras_json|safe }}');
+        
         // ステータスメッセージを表示
         function showStatusMessage(message, isError = false) {
             const msgElement = document.getElementById('status-message');

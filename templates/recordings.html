@@ -90,6 +90,10 @@
     </div>
     
     <script>
+        // カメラデータをJSONに変換する必要はありません。
+        // recordings.htmlは録画リストを動的に表示するだけで、
+        // カメラ固有のJavaScriptは必要ありません。
+        
         document.addEventListener('DOMContentLoaded', function() {
             // ファイルサイズを取得して表示
             document.querySelectorAll('.file-size').forEach(function(element) {
