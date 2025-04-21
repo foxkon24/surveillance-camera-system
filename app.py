@@ -7,6 +7,7 @@ import logging
 import sys
 import time
 import threading
+import json
 
 # 自作モジュールのインポート
 import config
@@ -197,6 +198,7 @@ def restart_all_streams_endpoint():
         time.sleep(3)
         
         # ffmpegプロセスが残っていないか確認
+        import ffmpeg_utils
         ffmpeg_utils.kill_ffmpeg_processes()
         
         # すべてのカメラのストリームを再開
@@ -254,6 +256,7 @@ def stop_all_streaming_route():
         time.sleep(2)
         
         # 再度、強制終了を試みる（念のため）
+        import ffmpeg_utils
         ffmpeg_utils.kill_ffmpeg_processes()
         
         return jsonify({"status": "success" if success else "partial", 
@@ -345,6 +348,7 @@ def stop_all_recordings_route():
         time.sleep(1)
         
         # 念のため強制終了
+        import ffmpeg_utils
         ffmpeg_utils.kill_ffmpeg_processes()
         
         return jsonify({"status": "success" if success else "partial", 
@@ -413,13 +417,16 @@ def index():
         # カメラがなければユーザーに通知
         if not cameras:
             logging.warning("No cameras found in configuration")
-            return render_template('index.html', cameras=[], error="カメラが設定されていません。設定ファイルを確認してください。")
+            return render_template('index.html', cameras=[], cameras_json='[]', error="カメラが設定されていません。設定ファイルを確認してください。")
         
-        return render_template('index.html', cameras=cameras)
+        # カメラデータをJSONに変換
+        cameras_json = json.dumps([{"id": cam["id"], "name": cam["name"]} for cam in cameras])
+        
+        return render_template('index.html', cameras=cameras, cameras_json=cameras_json)
         
     except Exception as e:
         logging.error(f"Error loading index page: {e}")
-        return render_template('index.html', cameras=[], error=f"エラーが発生しました: {str(e)}")
+        return render_template('index.html', cameras=[], cameras_json='[]', error=f"エラーが発生しました: {str(e)}")
 
 @app.route('/system/cam/admin/')
 def index_admin():
@@ -431,13 +438,16 @@ def index_admin():
         # カメラ設定が存在するか確認
         if not cameras:
             logging.warning("No cameras found in configuration")
-            return render_template('admin.html', cameras=[], error="カメラが設定されていません。設定ファイルを確認してください。")
-            
-        return render_template('admin.html', cameras=cameras)
+            return render_template('admin.html', cameras=[], cameras_json='[]', error="カメラが設定されていません。設定ファイルを確認してください。")
+        
+        # カメラデータをJSONに変換
+        cameras_json = json.dumps([{"id": cam["id"], "name": cam["name"]} for cam in cameras])
+        
+        return render_template('admin.html', cameras=cameras, cameras_json=cameras_json)
         
     except Exception as e:
         logging.error(f"Error loading admin page: {e}")
-        return render_template('admin.html', cameras=[], error=f"エラーが発生しました: {str(e)}")
+        return render_template('admin.html', cameras=[], cameras_json='[]', error=f"エラーが発生しました: {str(e)}")
 
 @app.route('/system/cam/single')
 def index_single():
@@ -458,8 +468,11 @@ def index_single():
         # カメラの一時ディレクトリ確認
         camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
         fs_utils.ensure_directory_exists(camera_tmp_dir)
+        
+        # カメラデータをJSONに変換
+        camera_json = json.dumps({"id": target_camera["id"], "name": target_camera["name"]})
 
-        return render_template('single.html', camera=target_camera)
+        return render_template('single.html', camera=target_camera, camera_json=camera_json)
         
     except Exception as e:
         logging.error(f"Error loading single camera page: {e}")
