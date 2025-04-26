@@ -5,196 +5,95 @@
 import os
 import logging
 from datetime import datetime
-import time
-import json
-import threading
 import config
 
-# カメラ設定の最終読み込み時刻
-last_config_read_time = 0
-# 設定ファイルの最終更新時刻
-last_config_mtime = 0
-# 読み込んだカメラ設定
-cached_cameras = []
-# カメラ名のキャッシュ
-cached_camera_names = {}
-# 設定読み込みのロック
-config_lock = threading.Lock()
-# 設定ファイルの自動更新チェック間隔（秒）
-CONFIG_CHECK_INTERVAL = 60
+# グローバル変数としてカメラ設定をキャッシュ
+_camera_cache = None
+_camera_names_cache = None
 
-def read_config(force_reload=False):
+def read_config():
     """
     カメラ設定を読み込む
-
-    Args:
-        force_reload (bool): 強制的に再読み込みするか
+    キャッシュがある場合はキャッシュから返す
 
     Returns:
         list: カメラ情報のリスト。各カメラは辞書形式。
     """
-    global last_config_read_time, last_config_mtime, cached_cameras
+    global _camera_cache
     
-    # ロックを取得して設定の読み込みを排他制御
-    with config_lock:
-        current_time = time.time()
+    # キャッシュがあればそれを返す
+    if _camera_cache is not None:
+        return _camera_cache.copy()
         
-        # 現在の設定ファイルの更新時刻を取得
-        try:
-            current_mtime = os.path.getmtime(config.CONFIG_PATH) if os.path.exists(config.CONFIG_PATH) else 0
-        except Exception as e:
-            logging.error(f"設定ファイル更新時刻取得エラー: {e}")
-            current_mtime = 0
-        
-        # キャッシュの有効期限チェック（60秒以内の再読み込みはスキップ）
-        if (not force_reload and 
-            cached_cameras and 
-            current_time - last_config_read_time < CONFIG_CHECK_INTERVAL and
-            current_mtime == last_config_mtime):
-            return cached_cameras
+    try:
+        with open(config.CONFIG_PATH, 'r', encoding='utf-8') as file:
+            cameras = []
 
-        try:
-            if os.path.exists(config.CONFIG_PATH):
-                with open(config.CONFIG_PATH, 'r', encoding='utf-8') as file:
-                    cameras = []
-                    line_number = 0
+            for line in file:
+                parts = line.strip().split(',')
 
-                    for line in file:
-                        line_number += 1
-                        line = line.strip()
-                        
-                        # 空行またはコメント行はスキップ
-                        if not line or line.startswith('#'):
-                            continue
-                            
-                        parts = line.split(',')
+                # RTSPURLが空の場合はスキップ
+                if len(parts) >= 3 and parts[2].strip():
+                    cameras.append({
+                        'id': parts[0],
+                        'name': parts[1],
+                        'rtsp_url': parts[2]
+                    })
+            
+            # キャッシュを更新
+            _camera_cache = cameras
+            return cameras
 
-                        # フォーマットを確認 (最低でもID、名前、URLの3つが必要)
-                        if len(parts) < 3:
-                            logging.warning(f"Invalid format at line {line_number}: {line}")
-                            continue
+    except Exception as e:
+        logging.error(f"設定ファイル読み込みエラー: {e}")
+        return []
 
-                        # RTSPURLが空の場合はスキップ
-                        if not parts[2].strip():
-                            logging.warning(f"Empty RTSP URL at line {line_number}: {line}")
-                            continue
-
-                        # カメラ情報を追加
-                        camera = {
-                            'id': parts[0].strip(),
-                            'name': parts[1].strip(),
-                            'rtsp_url': parts[2].strip()
-                        }
-                        
-                        # オプションのパラメータがあれば追加
-                        if len(parts) > 3:
-                            # 追加設定（例: 有効/無効、自動録画など）
-                            camera['enabled'] = parts[3].strip().lower() in ('1', 'true', 'yes', 'on')
-                            
-                            # その他の設定
-                            if len(parts) > 4:
-                                camera['auto_record'] = parts[4].strip().lower() in ('1', 'true', 'yes', 'on')
-
-                        cameras.append(camera)
-
-                # キャッシュを更新
-                cached_cameras = cameras
-                last_config_read_time = current_time
-                last_config_mtime = current_mtime
-                
-                logging.info(f"カメラ設定を読み込みました: {len(cameras)}台")
-                return cameras
-            else:
-                logging.error(f"設定ファイルが見つかりません: {config.CONFIG_PATH}")
-                return []
-
-        except Exception as e:
-            logging.error(f"設定ファイル読み込みエラー: {e}")
-            return []
+def reload_config():
+    """
+    設定ファイルを強制的に再読み込みする
+    キャッシュをクリアして最新の設定を読み込む
+    
+    Returns:
+        list: 最新のカメラ情報リスト
+    """
+    global _camera_cache, _camera_names_cache
+    
+    # キャッシュをクリア
+    _camera_cache = None
+    _camera_names_cache = None
+    
+    # 設定を再読み込み
+    return read_config()
 
 def read_config_names():
     """
     カメラID/名前マッピングを読み込む
+    キャッシュがある場合はキャッシュから返す
 
     Returns:
         dict: カメラIDをキー、カメラ名を値とする辞書
     """
-    global cached_camera_names
+    global _camera_names_cache
     
-    # キャッシュが存在する場合はそれを使用
-    if cached_camera_names:
-        return cached_camera_names.copy()
+    # キャッシュがあればそれを返す
+    if _camera_names_cache is not None:
+        return _camera_names_cache.copy()
         
     camera_names = {}
-    
-    # カメラ設定を読み込み
-    cameras = read_config()
-    
-    # カメラ名をマッピング
-    for camera in cameras:
-        camera_names[camera['id']] = camera['name']
-    
-    # キャッシュを更新
-    cached_camera_names = camera_names.copy()
-    
-    return camera_names
-
-def write_config(cameras):
-    """
-    カメラ設定をファイルに書き込む
-
-    Args:
-        cameras (list): カメラ情報のリスト
-
-    Returns:
-        bool: 操作が成功したかどうか
-    """
-    global last_config_read_time, last_config_mtime, cached_cameras, cached_camera_names
-    
-    # ロックを取得して設定の書き込みを排他制御
-    with config_lock:
-        try:
-            # バックアップファイルを作成
-            backup_path = f"{config.CONFIG_PATH}.bak"
-            if os.path.exists(config.CONFIG_PATH):
-                with open(config.CONFIG_PATH, 'r', encoding='utf-8') as src, open(backup_path, 'w', encoding='utf-8') as dst:
-                    dst.write(src.read())
-                
-            # 新しい設定ファイルを書き込み
-            with open(config.CONFIG_PATH, 'w', encoding='utf-8') as file:
-                # ヘッダーを追加
-                file.write("# カメラ設定ファイル\n")
-                file.write("# 書式: カメラID,カメラ名,RTSP URL,有効/無効,自動録画\n")
-                file.write("# 更新日時: " + datetime.now().strftime("%Y-%m-%d %H:%M:%S") + "\n\n")
-                
-                # 各カメラの設定を書き込み
-                for camera in cameras:
-                    # 必須パラメータ
-                    line = f"{camera['id']},{camera['name']},{camera['rtsp_url']}"
-                    
-                    # オプションパラメータ
-                    if 'enabled' in camera:
-                        line += f",{'1' if camera['enabled'] else '0'}"
-                        
-                        if 'auto_record' in camera:
-                            line += f",{'1' if camera['auto_record'] else '0'}"
-                    
-                    file.write(line + "\n")
-            
-            # キャッシュをクリア
-            last_config_read_time = 0
-            cached_cameras = []
-            cached_camera_names = {}
-            
-            # 現在の更新時刻を取得
-            last_config_mtime = os.path.getmtime(config.CONFIG_PATH)
-            
-            logging.info(f"カメラ設定を保存しました: {len(cameras)}台")
-            return True
+    try:
+        with open(config.CONFIG_PATH, 'r', encoding='utf-8') as file:
+            for line in file:
+                parts = line.strip().split(',')
+                if len(parts) >= 2:
+                    camera_names[parts[0]] = parts[1]  # カメラIDと名前をマッピング
         
-        except Exception as e:
-            logging.error(f"設定ファイル書き込みエラー: {e}")
-            return False
+        # キャッシュを更新
+        _camera_names_cache = camera_names
+        return camera_names
+
+    except Exception as e:
+        logging.error(f"設定ファイル読み込みエラー: {e}")
+        return {}
 
 def get_recordings(base_path=None):
     """
@@ -226,39 +125,41 @@ def get_recordings(base_path=None):
                 # MP4ファイルのリストを取得
                 mp4_files = []
 
-                for file in os.listdir(camera_path):
-                    if file.endswith('.mp4'):
-                        # ファイル情報を取得
-                        file_path = os.path.join(camera_path, file)
-                        
-                        try:
-                            file_size = os.path.getsize(file_path)
-                            file_mtime = os.path.getmtime(file_path)
-
-                            # ファイル名から日時を解析
+                try:
+                    for file in os.listdir(camera_path):
+                        if file.endswith('.mp4'):
                             try:
-                                # ファイル名のフォーマット: <カメラID>_YYYYMMDDHHmmSS.mp4
-                                date_str = file.split('_')[1].split('.')[0]
-                                date = datetime.strptime(date_str, '%Y%m%d%H%M%S')
-                            except:
-                                date = datetime.fromtimestamp(file_mtime)
+                                # ファイル情報を取得
+                                file_path = os.path.join(camera_path, file)
+                                file_size = os.path.getsize(file_path)
+                                file_mtime = os.path.getmtime(file_path)
 
-                            # 非常に小さいファイルはスキップ（破損の可能性）
-                            if file_size > 1024:  # 1KB以上
+                                # ファイル名から日時を解析
+                                try:
+                                    # ファイル名のフォーマット: <カメラID>_YYYYMMDDHHmmSS.mp4
+                                    date_str = file.split('_')[1].split('.')[0]
+                                    date = datetime.strptime(date_str, '%Y%m%d%H%M%S')
+
+                                except:
+                                    date = datetime.fromtimestamp(file_mtime)
+
                                 mp4_files.append({
                                     'filename': file,
                                     'size': file_size,
                                     'date': date,
                                     'mtime': file_mtime
                                 })
-                            else:
-                                logging.warning(f"Skipping small file (possibly corrupted): {file_path} ({file_size} bytes)")
-                        except Exception as e:
-                            logging.error(f"Error getting file info: {file_path}, Error: {e}")
-
-                # 日時でソート（新しい順）
-                mp4_files.sort(key=lambda x: x['date'], reverse=True)
-                recordings[camera_id] = mp4_files
+                            except Exception as file_e:
+                                logging.error(f"Error processing file {file}: {file_e}")
+                                continue
+                                
+                    # 日時でソート（新しい順）
+                    mp4_files.sort(key=lambda x: x['date'], reverse=True)
+                    recordings[camera_id] = mp4_files
+                    
+                except Exception as dir_e:
+                    logging.error(f"Error reading directory {camera_path}: {dir_e}")
+                    continue
 
     except Exception as e:
         logging.error(f"録画ファイル取得エラー: {e}")
@@ -283,143 +184,29 @@ def get_camera_by_id(camera_id):
 
     return None
 
-def check_camera_connection(camera_id, rtsp_url=None):
+def check_camera_availability(cameras=None):
     """
-    カメラの接続状態を確認
+    カメラの可用性を確認する
 
     Args:
-        camera_id (str): 確認するカメラID
-        rtsp_url (str, optional): RTSPストリームURL。指定なしの場合は設定から取得
+        cameras (list, optional): 確認するカメラのリスト。指定なしの場合は全カメラ
 
     Returns:
-        bool: 接続が成功したかどうか
+        dict: カメラIDをキー、可用性を値とする辞書
     """
-    try:
-        # RTSPURLが指定されていない場合は設定から取得
-        if not rtsp_url:
-            camera = get_camera_by_id(camera_id)
-            if not camera:
-                logging.error(f"カメラ情報が見つかりません: {camera_id}")
-                return False
-                
-            rtsp_url = camera['rtsp_url']
-            
-        # RTSPURLが空の場合はエラー
-        if not rtsp_url:
-            logging.error(f"RTSPURLが空です: {camera_id}")
-            return False
-            
-        # 接続チェック
-        import ffmpeg_utils
-        connection_result = ffmpeg_utils.check_rtsp_connection(rtsp_url)
-        
-        if connection_result:
-            logging.info(f"カメラ接続成功: {camera_id}")
-        else:
-            logging.warning(f"カメラ接続失敗: {camera_id}")
-            
-        return connection_result
-        
-    except Exception as e:
-        logging.error(f"カメラ接続確認エラー: {camera_id}, Error: {e}")
-        return False
-
-def monitor_config_changes():
-    """
-    設定ファイルの変更を監視し、更新があれば自動で再読み込みする
-    """
-    global last_config_mtime
+    import ffmpeg_utils  # 循環インポートを避けるため関数内でインポート
     
-    while True:
-        try:
-            # 現在の設定ファイルの更新時刻を取得
-            if os.path.exists(config.CONFIG_PATH):
-                current_mtime = os.path.getmtime(config.CONFIG_PATH)
-                
-                # 更新時刻が変わっていれば設定を再読み込み
-                if current_mtime != last_config_mtime:
-                    logging.info(f"設定ファイルの変更を検出しました: {config.CONFIG_PATH}")
-                    read_config(force_reload=True)
-            
-        except Exception as e:
-            logging.error(f"設定ファイル監視エラー: {e}")
-            
-        # 定期的にチェック
-        time.sleep(CONFIG_CHECK_INTERVAL)
-
-def start_config_monitor():
-    """
-    設定ファイル監視スレッドを開始
-    """
-    monitor_thread = threading.Thread(target=monitor_config_changes, daemon=True)
-    monitor_thread.start()
-    logging.info("設定ファイル監視スレッドを開始しました")
-
-def export_camera_status(output_path):
-    """
-    全カメラの状態をJSONファイルにエクスポート
-
-    Args:
-        output_path (str): 出力ファイルパス
-
-    Returns:
-        bool: 操作が成功したかどうか
-    """
-    try:
-        # カメラ設定を読み込み
+    if cameras is None:
         cameras = read_config()
         
-        # ストリーミング状態を取得
-        import streaming
+    availability = {}
+    
+    for camera in cameras:
+        camera_id = camera['id']
+        rtsp_url = camera['rtsp_url']
         
-        # 録画状態を取得
-        import recording
+        # RTSP接続をチェック
+        available = ffmpeg_utils.check_rtsp_connection(rtsp_url)
+        availability[camera_id] = available
         
-        # カメラごとのステータスを収集
-        status = {}
-        for camera in cameras:
-            camera_id = camera['id']
-            
-            # ストリーミング状態
-            stream_status = streaming.get_camera_status(camera_id)
-            
-            # 録画状態
-            recording_active = camera_id in recording.recording_processes and recording.recording_processes[camera_id]
-            recording_status = recording.recording_status.get(camera_id, 0)
-            
-            # 接続状態
-            try:
-                connection_ok = check_camera_connection(camera_id, camera['rtsp_url'])
-            except:
-                connection_ok = False
-            
-            # 統合ステータス
-            status[camera_id] = {
-                'id': camera_id,
-                'name': camera['name'],
-                'connection': {
-                    'ok': connection_ok,
-                    'rtsp_url': camera['rtsp_url']
-                },
-                'streaming': stream_status,
-                'recording': {
-                    'active': recording_active,
-                    'status': recording_status
-                },
-                'timestamp': time.time()
-            }
-        
-        # JSONファイルに書き込み
-        with open(output_path, 'w', encoding='utf-8') as file:
-            json.dump({
-                'cameras': status,
-                'timestamp': time.time(),
-                'version': config.VERSION
-            }, file, indent=2)
-            
-        logging.info(f"カメラステータスをエクスポートしました: {output_path}")
-        return True
-        
-    except Exception as e:
-        logging.error(f"カメラステータスエクスポートエラー: {e}")
-        return False
+    return availability
