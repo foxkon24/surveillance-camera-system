@@ -6,8 +6,6 @@ import os
 import logging
 import sys
 import time
-import threading
-import concurrent.futures
 
 # 自作モジュールのインポート
 import config
@@ -52,46 +50,10 @@ def serve_tmp_files(camera_id, filename):
         # パスを正規化
         file_path = os.path.join(config.TMP_PATH, camera_id, filename).replace('/', '\\')
         directory = os.path.dirname(file_path)
-        
-        logging.info(f"Requested tmp file: {file_path}")
 
         if not os.path.exists(file_path):
-            logging.warning(f"File not found: {file_path}")
-            
-            # m3u8ファイルのリクエストでファイルが見つからない場合、生成を試みる
-            if filename.endswith('.m3u8') and camera_id in streaming.streaming_processes:
-                # リトライカウンター
-                retry_count = 0
-                max_retries = 5  # 3から5に増加
-                
-                logging.info(f"Retrying to find m3u8 file for camera {camera_id}")
-                
-                while retry_count < max_retries:
-                    # 少し待機してファイルの生成を待つ
-                    time.sleep(0.5)
-                    if os.path.exists(file_path):
-                        logging.info(f"M3U8 file found after retry {retry_count}: {file_path}")
-                        break
-                    retry_count += 1
-                
-                # 処理後もファイルが見つからない場合
-                if not os.path.exists(file_path):
-                    logging.warning(f"M3U8 file still not found after {max_retries} retries: {file_path}")
-                    
-                    # ストリーミングプロセスがアクティブなら空のファイルを返す
-                    if camera_id in streaming.streaming_processes:
-                        logging.info(f"Returning empty M3U8 file for camera {camera_id}")
-                        return '#EXTM3U\n#EXT-X-VERSION:3\n', 200, {'Content-Type': 'application/vnd.apple.mpegurl'}
-            
-            # TS ファイルの場合は404を返す
-            if filename.endswith('.ts'):
-                logging.warning(f"TS file not found: {file_path}")
-                return "TS file not found", 404
-                
             return "File not found", 404
 
-        logging.info(f"Serving file: {file_path}, size: {os.path.getsize(file_path)} bytes")
-        
         return send_from_directory(
             directory,
             os.path.basename(file_path),
@@ -167,46 +129,24 @@ def stop_all_recordings_route():
 def index():
     """メインページ"""
     cameras = camera_utils.read_config()
-    
-    # カメラを一つずつ順番に初期化する（より確実な方法）
-    camera_initialized = []
-    
     for camera in cameras:
-        try:
-            success = streaming.get_or_start_streaming(camera)
-            if success:
-                camera_initialized.append(camera)
-                logging.info(f"Camera {camera['id']} initialized successfully")
-            else:
-                logging.error(f"Failed to initialize camera {camera['id']}")
-            # カメラ間で少し待機
-            time.sleep(1)
-        except Exception as e:
-            logging.error(f"Error initializing camera {camera['id']}: {e}")
-    
+        streaming.get_or_start_streaming(camera)
+
+    # ストリームの初期化を少し長めに待つ
+    time.sleep(2)
+
     return render_template('index.html', cameras=cameras)
 
 @app.route('/system/cam/admin/')
 def index_admin():
     """管理ページ"""
     cameras = camera_utils.read_config()
-    
-    # カメラを一つずつ順番に初期化する（より確実な方法）
-    camera_initialized = []
-    
     for camera in cameras:
-        try:
-            success = streaming.get_or_start_streaming(camera)
-            if success:
-                camera_initialized.append(camera)
-                logging.info(f"Camera {camera['id']} initialized successfully")
-            else:
-                logging.error(f"Failed to initialize camera {camera['id']}")
-            # カメラ間で少し待機
-            time.sleep(1)
-        except Exception as e:
-            logging.error(f"Error initializing camera {camera['id']}: {e}")
-    
+        streaming.get_or_start_streaming(camera)
+
+    # ストリームの初期化を少し長めに待つ
+    time.sleep(2)
+
     return render_template('admin.html', cameras=cameras)
 
 @app.route('/system/cam/single')
@@ -222,9 +162,11 @@ def index_single():
     if target_camera is None:
         return 'Camera not found', 404
 
-    # 単一カメラのみ初期化
     streaming.get_or_start_streaming(target_camera)
-    
+
+    # ストリームの初期化を少し長めに待つ
+    time.sleep(2)
+
     return render_template('single.html', camera=target_camera)
 
 @app.route('/system/cam/backup/')
@@ -234,16 +176,6 @@ def backup_recordings():
     camera_names = camera_utils.read_config_names()
 
     return render_template('backup_recordings.html', recordings=recordings, camera_names=camera_names)
-
-def initialize_cameras(cameras):
-    """カメラを順次初期化する非同期関数"""
-    for camera in cameras:
-        try:
-            streaming.get_or_start_streaming(camera)
-            # カメラ初期化の間に適切な間隔を設ける
-            time.sleep(config.CAMERA_START_STAGGER)
-        except Exception as e:
-            logging.error(f"Error initializing camera {camera['id']}: {e}")
 
 def initialize_app():
     """アプリケーション初期化"""
@@ -276,9 +208,6 @@ def initialize_app():
 
         # 録画システムの初期化
         recording.initialize_recording()
-
-        # 起動時にすべてのFFmpegプロセスをクリーンアップ
-        ffmpeg_utils.kill_ffmpeg_processes()
 
         # FFmpegの確認
         if not config.check_ffmpeg():

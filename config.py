@@ -20,14 +20,26 @@ MAX_RECORDING_HOURS = 1  # 最大録画時間（時間）
 MIN_DISK_SPACE_GB = 1    # 最小必要ディスク容量（GB）
 
 # ストリーミング設定
-RETRY_ATTEMPTS = 5       # 再試行回数（増加）
-RETRY_DELAY = 5          # 再試行遅延（秒）（減少）
-MAX_RETRY_DELAY = 30     # 最大再試行遅延（秒）（減少）
+RETRY_ATTEMPTS = 3       # 再試行回数
+RETRY_DELAY = 10         # 再試行遅延（秒）
+MAX_RETRY_DELAY = 60     # 最大再試行遅延（秒）
 
-# リソース管理設定
-MAX_CONCURRENT_STREAMS = 4     # 同時ストリーミング最大数（6から4に変更）
-MAX_CONCURRENT_RECORDINGS = 3  # 同時録画最大数
-CAMERA_START_STAGGER = 2       # カメラ起動の間隔（秒）（1から2に変更）
+# リソース制限設定
+MAX_CONCURRENT_STREAMS = 50     # 同時ストリーミング最大数
+RESOURCE_CHECK_INTERVAL = 60    # リソースチェック間隔（秒）
+MAX_CPU_PERCENT = 80            # 最大CPU使用率（%）
+MAX_MEM_PERCENT = 80            # 最大メモリ使用率（%）
+CLEANUP_INTERVAL = 300          # 古いセグメントファイル削除間隔（秒）
+HLS_SEGMENT_MAX_AGE = 600       # 古いセグメントファイルの最大保持時間（秒）
+
+# HLS設定
+HLS_SEGMENT_TIME = 2            # HLSセグメント長（秒）
+HLS_LIST_SIZE = 5               # HLSプレイリストサイズ
+
+# ネットワーク設定
+RTSP_TIMEOUT = 15               # RTSP接続タイムアウト（秒）
+HEALTH_CHECK_INTERVAL = 15      # ヘルスチェック間隔（秒）
+HLS_UPDATE_TIMEOUT = 20         # HLSファイル更新タイムアウト（秒）
 
 # ロギング設定
 def setup_logging():

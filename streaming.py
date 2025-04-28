@@ -8,7 +8,7 @@ import threading
 import time
 import subprocess
 import psutil
-import random
+import queue
 
 import config
 import ffmpeg_utils
@@ -21,21 +21,20 @@ streaming_processes = {}
 hls_last_update = {}
 # m3u8ファイルの前回のサイズを追跡
 m3u8_last_size = {}
-# ストリーミング情報を保持する辞書
-streaming_info = {}
+# ストリーミングキューを追加
+streaming_queue = queue.Queue()
+# ストリーミング処理のロック
+streaming_lock = threading.Lock()
+# 同時ストリーミング数
+active_streams_count = 0
+# ストリーミングワーカーの実行フラグ
+streaming_workers_running = False
+# リソース使用状況
+system_resources = {'cpu': 0, 'memory': 0}
 # 健全性チェックの間隔（秒）
 HEALTH_CHECK_INTERVAL = 15
 # ファイル更新タイムアウト（秒）- この時間以上更新がない場合は問題と判断
-HLS_UPDATE_TIMEOUT = 120  # Default timeout for HLS stream update in seconds
-# カメラ起動の間隔（秒）- カメラごとの起動間隔
-CAMERA_START_INTERVAL = 2  # 1秒から2秒に変更
-# 同時ストリーミングの最大数
-MAX_CONCURRENT_STREAMS = 4  # 6から4に戻す
-# プロセス起動前の待機時間
-PROCESS_START_DELAY = 2  # 1秒から2秒に変更
-# 現在アクティブなストリーミングの数
-active_streams_lock = threading.Lock()
-active_streams_count = 0
+HLS_UPDATE_TIMEOUT = 30
 
 def get_or_start_streaming(camera):
     """
@@ -49,149 +48,228 @@ def get_or_start_streaming(camera):
     """
     global active_streams_count
     
-    if camera['id'] not in streaming_processes:
+    if camera['id'] in streaming_processes:
+        # すでにストリーミング中の場合は成功を返す
+        return True
+    
+    # キューに追加して非同期で処理
+    streaming_queue.put(camera)
+    
+    # ワーカースレッドがまだ起動していなければ起動
+    if not streaming_workers_running:
+        start_streaming_workers()
+    
+    # キューに入れたことを成功として返す
+    return True
+
+def start_streaming_workers():
+    """
+    ストリーミングワーカースレッドを開始する
+    """
+    global streaming_workers_running
+    
+    if streaming_workers_running:
+        return
+    
+    streaming_workers_running = True
+    
+    # ワーカースレッドを作成
+    for i in range(3):  # 複数のワーカースレッドを作成
+        worker = threading.Thread(
+            target=streaming_worker,
+            daemon=True,
+            name=f"streaming-worker-{i}"
+        )
+        worker.start()
+    
+    # リソース監視スレッドを開始
+    resource_monitor = threading.Thread(
+        target=monitor_system_resources,
+        daemon=True,
+        name="resource-monitor"
+    )
+    resource_monitor.start()
+    
+    # 定期的なクリーンアップスレッドを開始
+    cleanup_thread = threading.Thread(
+        target=cleanup_scheduler,
+        daemon=True,
+        name="cleanup-scheduler"
+    )
+    cleanup_thread.start()
+    
+    logging.info("Streaming workers and resource monitor started")
+
+def streaming_worker():
+    """
+    ストリーミングリクエストを処理するワーカー
+    """
+    global active_streams_count
+    
+    while True:
         try:
-            # 現在のアクティブストリーム数を確認
-            with active_streams_lock:
-                current_active = active_streams_count
-                
-            # カメラの準備
-            camera_tmp_dir = os.path.join(config.TMP_PATH, camera['id'])
-            fs_utils.ensure_directory_exists(camera_tmp_dir)
-
-            hls_path = os.path.join(camera_tmp_dir, f"{camera['id']}.m3u8").replace('/', '\\')
-            log_path = os.path.join(camera_tmp_dir, f"{camera['id']}.log").replace('/', '\\')
-
-            # 古いHLSファイルを削除
-            if os.path.exists(hls_path):
-                try:
-                    os.remove(hls_path)
-                    logging.info(f"Removed old HLS file: {hls_path}")
-                except Exception as e:
-                    logging.error(f"Error removing old HLS file: {e}")
-                    
-            # 古いTSセグメントも削除
-            ts_files_removed = 0
-            for file in os.listdir(camera_tmp_dir):
-                if file.endswith('.ts'):
-                    try:
-                        os.remove(os.path.join(camera_tmp_dir, file))
-                        ts_files_removed += 1
-                    except Exception as e:
-                        logging.error(f"Error removing old TS file {file}: {e}")
+            # キューからカメラ情報を取得
+            camera = streaming_queue.get(timeout=1)
             
-            if ts_files_removed > 0:
-                logging.info(f"Removed {ts_files_removed} old TS files from {camera_tmp_dir}")
-
-            # 既存のffmpegプロセスが残っている場合、強制終了
-            ffmpeg_utils.kill_ffmpeg_processes(camera['id'])
+            # 既にストリーミング中ならスキップ
+            if camera['id'] in streaming_processes:
+                streaming_queue.task_done()
+                continue
             
-            # RTSPストリームの接続確認
-            connection_success = ffmpeg_utils.check_rtsp_connection(camera['rtsp_url'])
-            if not connection_success:
-                logging.warning(f"Failed to connect to RTSP stream for camera {camera['id']}: {camera['rtsp_url']}")
-                # 接続に失敗した場合は一定時間待機してから再試行
-                time.sleep(1)
-                connection_success = ffmpeg_utils.check_rtsp_connection(camera['rtsp_url'])
-                
-                if not connection_success:
-                    logging.error(f"Failed to connect to RTSP stream after retry for camera {camera['id']}")
-                    return False
-
-            # Nginx用に最適化されたHLSセグメントパス
-            segment_path = os.path.join(camera_tmp_dir, f"{camera['id']}_%03d.ts").replace('/', '\\')
+            # リソース使用状況をチェック
+            cpu_usage = system_resources['cpu']
+            mem_usage = system_resources['memory']
             
-            # アクティブストリーム数をインクリメント
-            with active_streams_lock:
-                active_streams_count += 1
-                logging.info(f"Active streams: {active_streams_count}")
-                
-            # Windowsでのパス問題を避けるため、パスを引用符で囲む
-            safe_hls_path = f'"{hls_path}"'
-            safe_segment_path = f'"{segment_path}"'
-                
-            # ffmpegコマンドを簡略化
-            command = [
-                'ffmpeg',
-                '-rtsp_transport', 'tcp',
-                '-i', camera['rtsp_url'],
-                '-c:v', 'copy',
-                '-c:a', 'copy',
-                '-f', 'hls',
-                '-hls_time', '2',
-                '-hls_list_size', '6',
-                '-hls_flags', 'delete_segments',
-                '-hls_segment_filename', segment_path,
-                hls_path
-            ]
-
-            # プロセス起動
-            process = ffmpeg_utils.start_ffmpeg_process(command, log_path=log_path, high_priority=False)
-            streaming_processes[camera['id']] = process
+            with streaming_lock:
+                current_streams = active_streams_count
             
-            # ストリーミング情報を更新
-            streaming_info[camera['id']] = {
-                'playlist_path': hls_path,
-                'camera_tmp_dir': camera_tmp_dir,
-                'rtsp_url': camera['rtsp_url']
+            # リソース制限チェック
+            if current_streams >= config.MAX_CONCURRENT_STREAMS:
+                logging.warning(f"Maximum concurrent streams limit reached ({current_streams}/{config.MAX_CONCURRENT_STREAMS}). Delaying stream for camera {camera['id']}")
+                # キューに戻して後で再試行
+                streaming_queue.put(camera)
+                streaming_queue.task_done()
+                time.sleep(5)
+                continue
+            
+            if cpu_usage > config.MAX_CPU_PERCENT or mem_usage > config.MAX_MEM_PERCENT:
+                logging.warning(f"System resources critical: CPU {cpu_usage}%, Memory {mem_usage}%. Delaying stream for camera {camera['id']}")
+                # キューに戻して後で再試行
+                streaming_queue.put(camera)
+                streaming_queue.task_done()
+                time.sleep(10)
+                continue
+            
+            # ストリーミングを開始
+            success = start_streaming_process(camera)
+            
+            if success:
+                with streaming_lock:
+                    active_streams_count += 1
+                logging.info(f"Successfully started streaming for camera {camera['id']}. Active streams: {active_streams_count}")
+            else:
+                logging.error(f"Failed to start streaming for camera {camera['id']}")
+                # 少し待ってから再試行
+                time.sleep(5)
+                streaming_queue.put(camera)
+            
+            streaming_queue.task_done()
+            
+        except queue.Empty:
+            # キューが空の場合は待機
+            time.sleep(0.5)
+        except Exception as e:
+            logging.error(f"Error in streaming worker: {e}")
+            time.sleep(1)
+
+def start_streaming_process(camera):
+    """
+    実際にストリーミングプロセスを開始する
+
+    Args:
+        camera (dict): カメラ情報
+
+    Returns:
+        bool: 操作が成功したかどうか
+    """
+    try:
+        camera_tmp_dir = os.path.join(config.TMP_PATH, camera['id'])
+        fs_utils.ensure_directory_exists(camera_tmp_dir)
+
+        hls_path = os.path.join(camera_tmp_dir, f"{camera['id']}.m3u8").replace('/', '\\')
+        log_path = os.path.join(camera_tmp_dir, f"{camera['id']}.log").replace('/', '\\')
+
+        if os.path.exists(hls_path):
+            os.remove(hls_path)
+
+        # 既存のffmpegプロセスが残っている場合、強制終了
+        ffmpeg_utils.kill_ffmpeg_processes(camera['id'])
+        time.sleep(1)  # プロセス終了待ち
+
+        # RTSPストリームの接続確認
+        if not ffmpeg_utils.check_rtsp_connection(camera['rtsp_url'], timeout=config.RTSP_TIMEOUT):
+            logging.warning(f"Failed to connect to RTSP stream for camera {camera['id']}: {camera['rtsp_url']}")
+            # 接続に失敗しても続行する - 後でリトライするため
+
+        # Nginx用に最適化されたHLSセグメントパス
+        segment_path = os.path.join(camera_tmp_dir, f"{camera['id']}_%03d.ts").replace('/', '\\')
+        
+        # HLSストリーミング用FFmpegコマンド生成
+        ffmpeg_command = ffmpeg_utils.get_ffmpeg_hls_command(
+            camera['rtsp_url'], 
+            hls_path,
+            segment_path,
+            segment_time=config.HLS_SEGMENT_TIME,
+            list_size=config.HLS_LIST_SIZE
+        )
+
+        # プロセス起動
+        process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command, log_path=log_path)
+        streaming_processes[camera['id']] = process
+        
+        # 初期化時点で更新情報を記録
+        hls_last_update[camera['id']] = time.time()
+        if os.path.exists(hls_path):
+            m3u8_last_size[camera['id']] = os.path.getsize(hls_path)
+        else:
+            m3u8_last_size[camera['id']] = 0
+
+        # 監視スレッドを開始
+        monitor_thread = threading.Thread(
+            target=monitor_streaming_process,
+            args=(camera['id'], process),
+            daemon=True
+        )
+        monitor_thread.start()
+
+        # ファイル更新監視スレッドを開始
+        hls_monitor_thread = threading.Thread(
+            target=monitor_hls_updates,
+            args=(camera['id'],),
+            daemon=True
+        )
+        hls_monitor_thread.start()
+
+        logging.info(f"Started streaming for camera {camera['id']}")
+        return True
+
+    except Exception as e:
+        logging.error(f"Error starting streaming for camera {camera['id']}: {e}")
+        return False
+
+def monitor_system_resources():
+    """
+    システムリソースを監視する
+    """
+    global system_resources
+    
+    while True:
+        try:
+            # CPU使用率を取得
+            cpu_percent = psutil.cpu_percent(interval=1)
+            
+            # メモリ使用率を取得
+            mem = psutil.virtual_memory()
+            mem_percent = mem.percent
+            
+            # リソース情報を更新
+            system_resources = {
+                'cpu': cpu_percent,
+                'memory': mem_percent
             }
             
-            # プロセスが起動していることを確認（起動直後に終了しないように）
-            time.sleep(0.5)
-            
-            if process.poll() is not None:
-                logging.error(f"FFmpeg process for camera {camera['id']} terminated immediately after start with code {process.returncode}")
-                with active_streams_lock:
-                    active_streams_count -= 1
-                return False
-            
-            # 初期化時点で更新情報を記録
-            hls_last_update[camera['id']] = time.time()
-            if os.path.exists(hls_path):
-                m3u8_last_size[camera['id']] = os.path.getsize(hls_path)
+            # ログに記録（情報レベル）
+            if cpu_percent > 70 or mem_percent > 70:
+                logging.warning(f"System resources high: CPU {cpu_percent}%, Memory {mem_percent}%, Active streams: {active_streams_count}")
             else:
-                m3u8_last_size[camera['id']] = 0
-
-            # 監視スレッドを開始
-            monitor_thread = threading.Thread(
-                target=monitor_streaming_process,
-                args=(camera['id'], process),
-                daemon=True
-            )
-            monitor_thread.start()
-
-            # ファイル更新監視スレッドを開始
-            hls_monitor_thread = threading.Thread(
-                target=monitor_hls_updates,
-                args=(camera['id'],),
-                daemon=True
-            )
-            hls_monitor_thread.start()
-
-            logging.info(f"Started streaming for camera {camera['id']}")
+                logging.info(f"System resources: CPU {cpu_percent}%, Memory {mem_percent}%, Active streams: {active_streams_count}")
             
-            # HLSファイルが生成されるのを少し待つ（最大10秒）
-            max_wait = 10
-            for i in range(max_wait * 2):
-                if os.path.exists(hls_path) and os.path.getsize(hls_path) > 0:
-                    logging.info(f"HLS file successfully created for camera {camera['id']} with size {os.path.getsize(hls_path)} bytes")
-                    break
-                time.sleep(0.5)
-            else:
-                logging.warning(f"HLS file not created for camera {camera['id']} after {max_wait} seconds")
+            # 一定間隔で監視
+            time.sleep(config.RESOURCE_CHECK_INTERVAL)
             
-            return True
-
         except Exception as e:
-            # エラー時にアクティブストリーム数を減らす
-            with active_streams_lock:
-                if active_streams_count > 0:
-                    active_streams_count -= 1
-            
-            logging.error(f"Error starting streaming for camera {camera['id']}: {e}")
-            return False
-
-    return True
+            logging.error(f"Error monitoring system resources: {e}")
+            time.sleep(60)  # エラー時は長めのインターバルを設ける
 
 def restart_streaming(camera_id):
     """
@@ -211,29 +289,20 @@ def restart_streaming(camera_id):
         # 既存のffmpegプロセスを強制終了
         ffmpeg_utils.kill_ffmpeg_processes(camera_id)
         
-        # アクティブストリーム数を減らす
-        with active_streams_lock:
-            if camera_id in streaming_processes and active_streams_count > 0:
-                active_streams_count -= 1
-                logging.info(f"Decreased active streams: {active_streams_count}")
-        
         # ストリーミングプロセスを削除
         if camera_id in streaming_processes:
             del streaming_processes[camera_id]
-        
-        # リソースをクリーンアップするために少し待機
-        time.sleep(3)  # 2から3秒に増加
+            with streaming_lock:
+                if active_streams_count > 0:
+                    active_streams_count -= 1
         
         # カメラ設定を読み込んでストリーミングを再開
         camera = camera_utils.get_camera_by_id(camera_id)
         if camera:
-            success = get_or_start_streaming(camera)
-            if success:
-                logging.info(f"Successfully restarted streaming for camera {camera_id}")
-                return True
-            else:
-                logging.error(f"Failed to restart streaming for camera {camera_id}")
-                return False
+            # キューに追加
+            streaming_queue.put(camera)
+            logging.info(f"Added camera {camera_id} to streaming queue for restart")
+            return True
         else:
             logging.error(f"Camera config not found for camera {camera_id}")
             return False
@@ -253,7 +322,7 @@ def monitor_hls_updates(camera_id):
     hls_path = os.path.join(camera_tmp_dir, f"{camera_id}.m3u8").replace('/', '\\')
     
     failures = 0
-    max_failures = 3  # 連続でこの回数分問題が検出されたら再起動
+    max_failures = 2  # 連続でこの回数分問題が検出されたら再起動
     
     while True:
         try:
@@ -267,34 +336,28 @@ def monitor_hls_updates(camera_id):
             
             # m3u8ファイルの存在と更新チェック
             if os.path.exists(hls_path):
-                try:
-                    # ファイルサイズをチェック
-                    current_size = os.path.getsize(hls_path)
-                    last_size = m3u8_last_size.get(camera_id, 0)
-                    
-                    if current_size != last_size:
-                        # ファイルサイズが変わっていれば更新されている
-                        m3u8_last_size[camera_id] = current_size
-                        hls_last_update[camera_id] = current_time
-                        file_updated = True
-                        failures = 0  # 正常更新を検出したらカウンタをリセット
-                except Exception as e:
-                    logging.error(f"Error checking m3u8 file size for camera {camera_id}: {e}")
+                # ファイルサイズをチェック
+                current_size = os.path.getsize(hls_path)
+                last_size = m3u8_last_size.get(camera_id, 0)
+                
+                if current_size != last_size:
+                    # ファイルサイズが変わっていれば更新されている
+                    m3u8_last_size[camera_id] = current_size
+                    hls_last_update[camera_id] = current_time
+                    file_updated = True
+                    failures = 0  # 正常更新を検出したらカウンタをリセット
             
             # TSファイルの更新も確認
-            try:
-                ts_files = [f for f in os.listdir(camera_tmp_dir) if f.endswith('.ts')]
-                if ts_files:
-                    newest_ts = max(ts_files, key=lambda f: os.path.getmtime(os.path.join(camera_tmp_dir, f)))
-                    newest_ts_path = os.path.join(camera_tmp_dir, newest_ts)
-                    ts_mtime = os.path.getmtime(newest_ts_path)
-                    
-                    if ts_mtime > hls_last_update.get(camera_id, 0):
-                        hls_last_update[camera_id] = current_time
-                        file_updated = True
-                        failures = 0  # 正常更新を検出したらカウンタをリセット
-            except Exception as e:
-                logging.error(f"Error checking ts files for camera {camera_id}: {e}")
+            ts_files = [f for f in os.listdir(camera_tmp_dir) if f.endswith('.ts')]
+            if ts_files:
+                newest_ts = max(ts_files, key=lambda f: os.path.getmtime(os.path.join(camera_tmp_dir, f)))
+                newest_ts_path = os.path.join(camera_tmp_dir, newest_ts)
+                ts_mtime = os.path.getmtime(newest_ts_path)
+                
+                if ts_mtime > hls_last_update.get(camera_id, 0):
+                    hls_last_update[camera_id] = current_time
+                    file_updated = True
+                    failures = 0  # 正常更新を検出したらカウンタをリセット
             
             # ファイル更新が停止しているかチェック
             last_update = hls_last_update.get(camera_id, 0)
@@ -304,11 +367,7 @@ def monitor_hls_updates(camera_id):
                 
                 if failures >= max_failures:
                     logging.error(f"HLS update timeout detected for camera {camera_id}. Restarting streaming.")
-                    # streamingモジュールのrestart_streaming関数を呼び出し
-                    try:
-                        restart_streaming(camera_id)
-                    except Exception as restart_err:
-                        logging.error(f"Failed to restart streaming for camera {camera_id}: {restart_err}")
+                    restart_streaming(camera_id)
                     failures = 0
                     
                     # 監視を終了（新しいスレッドが開始されるため）
@@ -320,72 +379,62 @@ def monitor_hls_updates(camera_id):
         time.sleep(HEALTH_CHECK_INTERVAL)
 
 def monitor_streaming_process(camera_id, process):
-    """監視スレッドでストリーミングプロセスを監視する。
-    プロセスが終了していた場合は再起動を試みる。
-    
-    Args:
-        camera_id (int or str): 監視するカメラのID
-        process (subprocess.Popen): 監視するプロセスオブジェクト
     """
-    camera_id = str(camera_id)
-    logging.info(f"Started monitoring streaming process for camera {camera_id}")
-    
-    # 再起動試行回数を追跡するカウンター
-    restart_attempts = 0
-    max_restart_attempts = 5  # 最大再起動試行回数
-    
-    while camera_id in streaming_processes:
-        # プロセスが終了したかチェック
-        return_code = process.poll()
-        
-        if return_code is not None:
-            # プロセスが終了している場合
-            
-            # 再起動試行回数が多すぎる場合はしばらく待機
-            if restart_attempts >= max_restart_attempts:
-                logging.warning(f"Too many restart attempts for camera {camera_id}. Waiting 60 seconds before next attempt.")
-                time.sleep(60)
-                restart_attempts = 0
-            
-            logging.warning(f"Streaming process for camera {camera_id} has died with return code {return_code}")
-            
-            # 最初にカメラのリソースをクリーンアップ
-            cleanup_camera_resources(camera_id)
-            
-            # 既存のFFmpegプロセスを確実に終了
-            ffmpeg_utils.kill_ffmpeg_processes(camera_id)
-            
-            # 少し待機してからストリーミングを再開
-            time.sleep(5)
-            
-            try:
-                logging.info(f"Attempting to restart streaming for camera {camera_id}")
-                # カメラ設定を再取得
+    ストリーミングプロセス監視関数
+
+    Args:
+        camera_id (str): 監視するカメラID
+        process (subprocess.Popen): 監視するプロセス
+    """
+    consecutive_failures = 0
+    max_failures = config.RETRY_ATTEMPTS
+    retry_delay = config.RETRY_DELAY
+    max_retry_delay = config.MAX_RETRY_DELAY
+
+    while True:
+        try:
+            # プロセスが終了しているか確認
+            if process.poll() is not None:
+                consecutive_failures += 1
+                current_delay = min(retry_delay * consecutive_failures, max_retry_delay)
+
+                logging.warning(f"Streaming process for camera {camera_id} has died. "
+                                f"Attempt {consecutive_failures}/{max_failures}. "
+                                f"Waiting {current_delay} seconds before retry.")
+
+                # 既存のffmpegプロセスを強制終了
+                ffmpeg_utils.kill_ffmpeg_processes(camera_id)
+                time.sleep(current_delay)
+
+                if consecutive_failures >= max_failures:
+                    logging.error(f"Too many consecutive failures for camera {camera_id}. Performing full restart.")
+                    cleanup_camera_resources(camera_id)
+                    consecutive_failures = 0
+
+                # ストリーミングプロセスを削除
+                if camera_id in streaming_processes:
+                    del streaming_processes[camera_id]
+
+                # カメラ設定を読み込んでストリーミングを再開
                 camera = camera_utils.get_camera_by_id(camera_id)
-                if not camera:
-                    logging.error(f"Failed to get camera config for {camera_id} during restart")
-                    time.sleep(30)  # 設定が取得できない場合は長めに待機
-                    restart_attempts += 1
-                    continue
-                
-                # ストリーミングを再開
-                success = get_or_start_streaming(camera)
-                if success:
-                    logging.info(f"Successfully restarted streaming for camera {camera_id}")
-                    restart_attempts = 0  # 成功したらカウンタをリセット
-                    break  # 新しいモニタースレッドが作成されるので、このスレッドは終了
-                else:
-                    logging.error(f"Failed to restart streaming for camera {camera_id}")
-                    restart_attempts += 1
-            except Exception as e:
-                logging.error(f"Error restarting streaming for camera {camera_id}: {e}")
-                restart_attempts += 1
-                time.sleep(10)  # エラー後も少し待機
-        
-        # 少し待ってから再チェック
-        time.sleep(5)
-    
-    logging.info(f"Stopped monitoring streaming process for camera {camera_id}")
+                if camera:
+                    success = get_or_start_streaming(camera)
+                    if success:
+                        consecutive_failures = 0
+                        logging.info(f"Successfully restarted streaming for camera {camera_id}")
+                    else:
+                        logging.error(f"Failed to restart streaming for camera {camera_id}")
+                break
+            else:
+                # プロセスが正常な場合、失敗カウントをリセット
+                consecutive_failures = 0
+
+        except Exception as e:
+            logging.error(f"Error monitoring streaming process for camera {camera_id}: {e}")
+            time.sleep(5)
+            continue
+
+        time.sleep(5)  # 5秒ごとにチェック
 
 def cleanup_camera_resources(camera_id):
     """
@@ -409,101 +458,68 @@ def cleanup_camera_resources(camera_id):
     except Exception as e:
         logging.error(f"Error in cleanup_camera_resources for camera {camera_id}: {e}")
 
-def cleanup_old_segments(camera_id, playlist_path):
+def cleanup_old_segments(camera_id):
     """
-    古いHLSセグメントファイルをクリーンアップする
+    HLSセグメントファイルをクリーンアップする
 
     Args:
-        camera_id (str): カメラID
-        playlist_path (str): m3u8プレイリストファイルのパス
+        camera_id (str): クリーンアップするカメラID
     """
     try:
-        if not os.path.exists(playlist_path):
-            return False
+        camera_tmp_dir = os.path.join(config.TMP_PATH, camera_id)
+        if not os.path.exists(camera_tmp_dir):
+            return
 
-        # プレイリストディレクトリ
-        playlist_dir = os.path.dirname(playlist_path)
-        
-        # プレイリストファイルを読み込み
-        now = time.time()
-        try:
-            with open(playlist_path, 'r') as f:
-                playlist_content = f.read()
-        except Exception as e:
-            logging.error(f"Failed to read playlist file {playlist_path}: {e}")
-            return False
-        
-        # プレイリストから.tsファイル名を抽出
-        ts_files_in_playlist = []
-        for line in playlist_content.split('\n'):
-            if line.endswith('.ts') and not line.startswith('#'):
-                ts_files_in_playlist.append(line.strip())
-        
-        # アクティブなストリーミングプロセスがない場合はクリーンアップしない
-        if camera_id not in streaming_processes:
-            logging.debug(f"Skipping cleanup for camera {camera_id} as streaming is not active")
-            return True
-        
-        # ディレクトリ内のすべての.tsファイルをチェック
-        all_ts_files = []
-        for file in os.listdir(playlist_dir):
-            if file.endswith(".ts"):
-                file_path = os.path.join(playlist_dir, file)
-                file_age = now - os.path.getmtime(file_path)
-                
-                # プレイリストに含まれていない.tsファイルは、300秒（5分）以上経過していれば削除
-                if file not in ts_files_in_playlist and file_age > 300:  # 180秒から300秒に変更
-                    try:
+        current_time = time.time()
+        m3u8_file = os.path.join(camera_tmp_dir, f"{camera_id}.m3u8")
+        active_segments = set()
+
+        # .m3u8ファイルから現在使用中のセグメントを取得
+        if os.path.exists(m3u8_file):
+            try:
+                with open(m3u8_file, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.endswith('.ts'):
+                            active_segments.add(os.path.basename(line))
+
+            except Exception as e:
+                logging.error(f"Error reading m3u8 file for camera {camera_id}: {e}")
+                return
+
+        # ディレクトリ内のtsファイルをチェック
+        for file in os.listdir(camera_tmp_dir):
+            if file.endswith('.ts'):
+                file_path = os.path.join(camera_tmp_dir, file)
+
+                try:
+                    # ファイルが以下の条件を満たす場合に削除:
+                    # 1. プレイリストに含まれていない
+                    # 2. 作成から60秒以上経過している
+                    if (file not in active_segments and current_time - os.path.getctime(file_path) > 60):
                         os.remove(file_path)
-                        logging.debug(f"Deleted old segment file: {file}")
-                    except Exception as e:
-                        logging.error(f"Error deleting segment file {file}: {e}")
-                else:
-                    all_ts_files.append((file, file_age))
-        
-        # プレイリストに含まれるファイルは保持する（削除ロジックを変更）
-        # 非常に古いファイルのみを削除対象にする
-        if len(all_ts_files) > 10:  # 5から10個に増加
-            all_ts_files.sort(key=lambda x: x[1], reverse=True)  # 最も古いファイルが先頭
-            for file, age in all_ts_files[10:]:  # 10個以上の場合
-                # 600秒（10分）以上経過したファイルのみ削除
-                if age > 600:  # 5分 から 10分に増加
-                    # プレイリストに含まれる場合はスキップ
-                    if file in ts_files_in_playlist:
-                        continue
-                        
-                    file_path = os.path.join(playlist_dir, file)
-                    try:
-                        os.remove(file_path)
-                        logging.debug(f"Deleted excess segment file: {file}")
-                    except Exception as e:
-                        logging.error(f"Error deleting excess segment file {file}: {e}")
-        
-        return True
+                        logging.info(f"Removed old segment file: {file}")
+
+                except Exception as e:
+                    logging.error(f"Error removing file {file}: {e}")
+
     except Exception as e:
-        logging.error(f"Error cleaning up segments for camera {camera_id}: {e}")
-        return False
+        logging.error(f"Error in cleanup_old_segments for camera {camera_id}: {e}")
 
 def cleanup_scheduler():
-    """クリーンアップスケジューラー。定期的に古いセグメントを削除する"""
-    logging.info("Started cleanup scheduler")
+    """
+    すべてのカメラに対して定期的にクリーンアップを実行するスケジューラー
+    """
     while True:
         try:
-            # すべてのアクティブなカメラに対してクリーンアップを実行
-            for camera_id in list(streaming_processes.keys()):
-                info = streaming_info.get(camera_id, {})
-                playlist_path = info.get('playlist_path')
-                if playlist_path and os.path.exists(playlist_path):
-                    cleanup_old_segments(camera_id, playlist_path)
-            
-            # 一時ファイルのクリーンアップ
-            cleanup_tmp_files()
-            
+            cameras = camera_utils.read_config()
+            for camera in cameras:
+                cleanup_old_segments(camera['id'])
+
         except Exception as e:
-            logging.error(f"Error in cleanup scheduler: {e}")
-        
-        # 120秒（2分）ごとにクリーンアップを実行
-        time.sleep(120)
+            logging.error(f"Error in cleanup_scheduler: {e}")
+
+        time.sleep(15)  # 15秒ごとに実行
 
 def stop_all_streaming():
     """
@@ -512,13 +528,7 @@ def stop_all_streaming():
     Returns:
         bool: 操作が成功したかどうか
     """
-    global active_streams_count
-    
     try:
-        # アクティブストリーム数をリセット
-        with active_streams_lock:
-            active_streams_count = 0
-            
         for camera_id, process in list(streaming_processes.items()):
             try:
                 if process and process.poll() is None:
@@ -541,41 +551,12 @@ def initialize_streaming():
     """
     ストリーミングシステムの初期化
     """
-    global active_streams_count
-    
-    # アクティブストリーム数を初期化
-    with active_streams_lock:
-        active_streams_count = 0
-    
     # クリーンアップスレッドの起動
     cleanup_thread = threading.Thread(target=cleanup_scheduler, daemon=True)
     cleanup_thread.start()
     logging.info("Started segment cleanup scheduler thread")
 
-def cleanup_tmp_files():
-    """
-    不要になった一時ファイルをクリーンアップする
-    """
-    try:
-        # tmp ディレクトリをチェック
-        if os.path.exists(config.TMP_PATH):
-            for camera_dir in os.listdir(config.TMP_PATH):
-                camera_path = os.path.join(config.TMP_PATH, camera_dir)
-                if os.path.isdir(camera_path):
-                    # カメラが現在ストリーミング中でない場合、古いファイルを削除
-                    if camera_dir not in streaming_processes:
-                        for file in os.listdir(camera_path):
-                            file_path = os.path.join(camera_path, file)
-                            if os.path.isfile(file_path):
-                                # ファイルが10分（600秒）以上前に変更された場合に削除
-                                file_age = time.time() - os.path.getmtime(file_path)
-                                if file_age > 600:
-                                    try:
-                                        os.remove(file_path)
-                                        logging.debug(f"Deleted old temporary file: {file_path}")
-                                    except Exception as e:
-                                        logging.error(f"Error deleting temporary file {file_path}: {e}")
-        return True
-    except Exception as e:
-        logging.error(f"Error cleaning up temporary files: {e}")
-        return False
+    # 全カメラ分のストリーミングをキューに投入
+    cameras = camera_utils.read_config()
+    for camera in cameras:
+        get_or_start_streaming(camera)

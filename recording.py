@@ -6,7 +6,6 @@ import os
 import logging
 import threading
 import time
-import random
 from datetime import datetime
 import subprocess
 
@@ -19,9 +18,6 @@ import camera_utils
 recording_processes = {}
 recording_threads = {}
 recording_start_times = {}  # 録画開始時刻を保持する辞書
-# 同時録画数の管理用ロック
-recording_lock = threading.Lock()
-active_recordings = 0
 
 def start_recording(camera_id, rtsp_url):
     """
@@ -34,18 +30,7 @@ def start_recording(camera_id, rtsp_url):
     Returns:
         bool: 操作が成功したかどうか
     """
-    global active_recordings
-    
     try:
-        # 同時録画数を確認
-        with recording_lock:
-            current_active = active_recordings
-            
-        # 同時録画数の上限に達している場合は待機
-        if current_active >= config.MAX_CONCURRENT_RECORDINGS:
-            logging.warning(f"Maximum concurrent recordings reached ({current_active}). Waiting before starting camera {camera_id}...")
-            time.sleep(2)  # 少し待機
-        
         # 既存のプロセスが存在する場合は終了
         if camera_id in recording_processes:
             stop_recording(camera_id)
@@ -82,14 +67,8 @@ def start_new_recording(camera_id, rtsp_url):
         camera_id (str): カメラID
         rtsp_url (str): RTSP URL
     """
-    global active_recordings
-    
     try:
         logging.info(f"Starting new recording for camera {camera_id} with URL {rtsp_url}")
-
-        # ランダムな待機時間を追加して録画の開始タイミングをずらす（0.5〜2秒）
-        random_delay = random.uniform(0.5, 2.0)
-        time.sleep(random_delay)
 
         # RTSP接続の確認
         if not ffmpeg_utils.check_rtsp_connection(rtsp_url):
@@ -116,13 +95,8 @@ def start_new_recording(camera_id, rtsp_url):
         ffmpeg_command = ffmpeg_utils.get_ffmpeg_record_command(rtsp_url, file_path)
         logging.info(f"Executing FFmpeg command: {' '.join(ffmpeg_command)}")
 
-        # アクティブ録画数を増加
-        with recording_lock:
-            active_recordings += 1
-            logging.info(f"Active recordings: {active_recordings}")
-            
-        # プロセスを開始（低優先度で実行）
-        process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command, high_priority=False)
+        # プロセスを開始
+        process = ffmpeg_utils.start_ffmpeg_process(ffmpeg_command)
 
         # プロセス情報を保存
         recording_processes[camera_id] = {
@@ -151,11 +125,6 @@ def start_new_recording(camera_id, rtsp_url):
         time.sleep(2)  # プロセスの起動を待つ
 
         if process.poll() is not None:
-            # プロセスが異常終了した場合
-            with recording_lock:
-                if active_recordings > 0:
-                    active_recordings -= 1
-                    
             return_code = process.poll()
             error_output = process.stderr.read().decode('utf-8', errors='replace')
             logging.error(f"FFmpeg process failed to start. Return code: {return_code}")
@@ -163,11 +132,6 @@ def start_new_recording(camera_id, rtsp_url):
             raise Exception(f"FFmpeg failed to start: {error_output}")
 
     except Exception as e:
-        # エラー時にアクティブ録画数を減らす
-        with recording_lock:
-            if active_recordings > 0:
-                active_recordings -= 1
-        
         logging.error(f"Error starting new recording for camera {camera_id}: {e}")
         logging.exception("Full stack trace:")
         raise
@@ -182,8 +146,6 @@ def stop_recording(camera_id):
     Returns:
         bool: 操作が成功したかどうか
     """
-    global active_recordings
-    
     logging.info(f"Attempting to stop recording for camera {camera_id}")
 
     recording_info = recording_processes.pop(camera_id, None)
@@ -200,12 +162,6 @@ def stop_recording(camera_id):
 
             # プロセスを終了
             ffmpeg_utils.terminate_process(process)
-            
-            # アクティブ録画数を減少
-            with recording_lock:
-                if active_recordings > 0:
-                    active_recordings -= 1
-                    logging.info(f"Decreased active recordings: {active_recordings}")
 
             # ファイル存在確認
             if os.path.exists(file_path):
@@ -222,11 +178,6 @@ def stop_recording(camera_id):
             return True
 
         except Exception as e:
-            # エラー時にもアクティブ録画数を減らす
-            with recording_lock:
-                if active_recordings > 0:
-                    active_recordings -= 1
-            
             logging.error(f"Error in stop_recording: {e}")
             logging.exception("Full stack trace:")
             return False
@@ -296,17 +247,8 @@ def monitor_recording_processes():
                         try:
                             stop_recording(camera_id)  # 念のため停止処理を実行
                             time.sleep(2)  # 少し待機
-                            
-                            # 同時録画数が上限に達していないか確認
-                            with recording_lock:
-                                current_active = active_recordings
-                                
-                            if current_active < config.MAX_CONCURRENT_RECORDINGS:
-                                start_recording(camera_id, camera['rtsp_url'])
-                                logging.info(f"Successfully restarted recording for camera {camera_id}")
-                            else:
-                                logging.warning(f"Cannot restart recording for camera {camera_id} due to max concurrent recordings limit ({current_active})")
-                                # 後で再試行するためのスケジューリングが必要かもしれない
+                            start_recording(camera_id, camera['rtsp_url'])
+                            logging.info(f"Successfully restarted recording for camera {camera_id}")
 
                         except Exception as e:
                             logging.error(f"Failed to restart recording for camera {camera_id}: {e}")
@@ -320,16 +262,11 @@ def initialize_recording():
     """
     録画システムの初期化
     """
-    global active_recordings
-    
-    # アクティブ録画数を初期化
-    with recording_lock:
-        active_recordings = 0
-    
     # 監視スレッドの起動
     monitor_thread = threading.Thread(target=monitor_recording_processes, daemon=True)
     monitor_thread.start()
     logging.info("Started recording process monitor thread")
+    # 自動録画開始は行わない（手動操作のみ）
 
 def start_all_recordings():
     """
@@ -340,14 +277,10 @@ def start_all_recordings():
     """
     success = True
     cameras = camera_utils.read_config()
-    
-    # カメラの起動タイミングをずらす
     for camera in cameras:
         try:
             if camera['rtsp_url']:
                 start_recording(camera['id'], camera['rtsp_url'])
-                # カメラごとに起動間隔を追加
-                time.sleep(config.CAMERA_START_STAGGER)
 
         except Exception as e:
             logging.error(f"Failed to start recording for camera {camera['id']}: {e}")
@@ -362,15 +295,8 @@ def stop_all_recordings():
     Returns:
         bool: 操作が成功したかどうか
     """
-    global active_recordings
-    
     success = True
     camera_ids = list(recording_processes.keys())
-    
-    # アクティブ録画数をリセット
-    with recording_lock:
-        active_recordings = 0
-    
     for camera_id in camera_ids:
         try:
             stop_recording(camera_id)
