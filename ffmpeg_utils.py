@@ -10,8 +10,9 @@ import time
 import re
 import os
 import threading
+import config
 
-def check_rtsp_connection(rtsp_url, timeout=10):
+def check_rtsp_connection(rtsp_url, timeout=15):
     """
     RTSP接続の可否をチェックする関数
 
@@ -23,35 +24,42 @@ def check_rtsp_connection(rtsp_url, timeout=10):
         bool: 接続が成功したかどうか
     """
     try:
+        # 通常のカメラに対する処理
         ffprobe_command = [
             'ffprobe',
             '-v', 'error',
             '-rtsp_transport', 'tcp',
+            '-timeout', '10000000',  # 10秒のソケットタイムアウト（マイクロ秒）
             '-i', rtsp_url,
             '-show_entries', 'format=duration',
             '-of', 'default=noprint_wrappers=1:nokey=1',
             '-read_intervals', '%+3'
         ]
 
-        # タイムアウトを設定
-        result = subprocess.run(
-            ffprobe_command, 
-            timeout=timeout,
-            capture_output=True,
-            text=True
-        )
+        # 接続試行を3回まで実施
+        for attempt in range(3):
+            try:
+                # タイムアウトを設定
+                result = subprocess.run(
+                    ffprobe_command, 
+                    timeout=timeout,
+                    capture_output=True,
+                    text=True
+                )
 
-        # 終了コードが0なら接続成功
-        if result.returncode == 0:
-            logging.info(f"RTSP connection successful: {rtsp_url}")
-            return True
-        else:
-            logging.warning(f"RTSP connection failed: {rtsp_url}, Error: {result.stderr}")
-            return False
+                # 終了コードが0なら接続成功
+                if result.returncode == 0:
+                    logging.info(f"RTSP connection successful: {rtsp_url}")
+                    return True
+                else:
+                    logging.warning(f"RTSP connection failed (attempt {attempt+1}/3): {rtsp_url}, Error: {result.stderr}")
+                    time.sleep(2)  # 再試行前に待機
+            except subprocess.TimeoutExpired:
+                logging.error(f"RTSP connection timeout (attempt {attempt+1}/3): {rtsp_url}")
+                time.sleep(2)  # 再試行前に待機
 
-    except subprocess.TimeoutExpired:
-        logging.error(f"RTSP connection timeout: {rtsp_url}")
         return False
+
     except Exception as e:
         logging.error(f"Error checking RTSP connection: {rtsp_url}, Error: {e}")
         return False
@@ -67,50 +75,48 @@ def kill_ffmpeg_processes(camera_id=None):
         bool: 終了処理が成功したかどうか
     """
     try:
-        # tasklist コマンドを実行してffmpegプロセスを検索
-        result = subprocess.check_output('tasklist | findstr ffmpeg', shell=True).decode()
-
-        # 各行からPIDを抽出
-        pids = []
-        for line in result.split('\n'):
-            if line.strip():
-                # スペースで分割し、2番目の要素（PID）を取得
-                pid = line.split()[1]
-
-                # 特定のカメラIDが指定された場合、プロセスの引数をチェック
-                if camera_id:
-                    try:
-                        process = psutil.Process(int(pid))
-                        cmdline = ' '.join(process.cmdline())
-
-                        # コマンドラインに特定のカメラIDが含まれているか確認
-                        if camera_id in cmdline:
-                            pids.append(pid)
-
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        # psutilを使用して全ffmpegプロセスを検索（より信頼性が高い）
+        killed_count = 0
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                # ffmpegプロセスを識別
+                if 'ffmpeg' in proc.info['name'].lower():
+                    cmdline = ' '.join(proc.info['cmdline'] if proc.info['cmdline'] else [])
+                    
+                    # 特定のカメラIDが指定された場合、コマンドラインをチェック
+                    if camera_id and camera_id not in cmdline:
                         continue
-                else:
-                    pids.append(pid)
+                        
+                    # プロセスを終了
+                    proc.kill()
+                    killed_count += 1
+                    logging.info(f"Killed ffmpeg process with PID: {proc.info['pid']}")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
 
-        # 見つかった各PIDに対してtaskkillを実行
-        for pid in pids:
-            kill_command = f'taskkill /F /PID {pid}'
-            subprocess.run(kill_command, shell=True)
-            logging.info(f'Killed ffmpeg process with PID: {pid}')
+        # バックアップ方法としてtaskkillも実行
+        if camera_id:
+            os.system(f'taskkill /F /FI "IMAGENAME eq ffmpeg.exe" /FI "COMMANDLINE eq *{camera_id}*"')
+        else:
+            os.system('taskkill /F /IM ffmpeg.exe')
 
-        if not pids:
+        if killed_count == 0:
             logging.info('No ffmpeg processes found to kill.')
             return False
 
         return True
 
-    except subprocess.CalledProcessError:
-        logging.info('No ffmpeg processes found.')
-        return False
-
     except Exception as e:
         logging.error(f'An error occurred during killing ffmpeg processes: {str(e)}')
-        return False
+        # エラー発生時でも最終手段としてtaskkillを試行
+        try:
+            if camera_id:
+                os.system(f'taskkill /F /FI "IMAGENAME eq ffmpeg.exe" /FI "COMMANDLINE eq *{camera_id}*"')
+            else:
+                os.system('taskkill /F /IM ffmpeg.exe')
+            return True
+        except:
+            return False
 
 def check_audio_stream(rtsp_url):
     """
@@ -162,9 +168,17 @@ def finalize_recording(file_path):
             ffmpeg_command = [
                 'ffmpeg',
                 '-i', file_path,
-                '-c', 'copy',
-                '-movflags', '+faststart',
-                '-y',
+                '-c:v', 'copy',                   # ビデオストリームをコピー
+                '-c:a', 'copy',                   # 音声ストリームをコピー
+                '-map_metadata', '0',             # メタデータを保持
+                '-movflags', '+faststart',        # MP4ファイルを最適化（ストリーミング向け）
+                '-write_tmcd', '0',               # タイムコードを書き込まない
+                '-use_editlist', '0',             # 編集リストを無効化
+                '-fflags', '+bitexact',           # ビット精度を維持
+                '-flags:v', '+global_header',     # グローバルヘッダー設定
+                '-ignore_unknown',                # 不明なデータを無視
+                '-tag:v', 'avc1',                 # 標準的なH.264タグを使用
+                '-y',                             # 出力ファイルを上書き
                 temp_path
             ]
 
@@ -228,24 +242,73 @@ def monitor_ffmpeg_output(process):
     Args:
         process (subprocess.Popen): 監視するFFmpegプロセス
     """
+    error_count = 0
+    hls_input_detected = False
+    recording_started = False
+    
     while True:
         try:
+            if process.stderr is None:
+                logging.warning("FFmpeg process stderr is None, cannot monitor output")
+                break
+
             line = process.stderr.readline()
             if not line:
                 break
 
             decoded_line = line.decode('utf-8', errors='replace').strip()
-            if decoded_line:
+            if not decoded_line:
+                continue
+
+            # HLS入力を使用しているかを検出
+            if '/system/cam/tmp/' in decoded_line and '.m3u8' in decoded_line:
+                hls_input_detected = True
+                logging.info(f"HLSストリームを入力として使用: {decoded_line}")
+            
+            # 録画開始を検出
+            if 'Output #0' in decoded_line and '.mp4' in decoded_line:
+                recording_started = True
+                logging.info("録画プロセスが出力を開始しました")
+
+            # エラーメッセージを検出
+            if "Error" in decoded_line or "error" in decoded_line.lower():
+                error_count += 1
+                logging.error(f"FFmpeg error detected: {decoded_line}")
+                
+                # HLS入力を使用しているプロセスの一般的なエラーを特別処理
+                if hls_input_detected and any(err in decoded_line for err in ["Operation not permitted", "Connection refused", "timeout"]):
+                    logging.warning(f"HLS入力で一般的なエラーが発生しましたが、処理を継続します: {decoded_line}")
+                    # エラーカウントをリセット（このエラーは無視）
+                    error_count = max(0, error_count - 1)
+                
+                # 深刻な録画エラーの検出
+                if recording_started and "Invalid data" in decoded_line:
+                    logging.error("録画データの破損が検出されました")
+                    error_count += 2  # 重大度を増加
+            else:
+                # 通常のログメッセージ
                 logging.info(f"FFmpeg output: {decoded_line}")
-                # エラーメッセージを検出
-                if "Error" in decoded_line:
-                    logging.error(f"FFmpeg error detected: {decoded_line}")
+                
+                # 録画の進行状況を示すメッセージを検出
+                if "frame=" in decoded_line and "time=" in decoded_line:
+                    # 正常に録画が進行中
+                    error_count = max(0, error_count - 1)  # エラーカウントを徐々に減少
+                    
+                    # タイムコード情報を抽出して記録
+                    if "time=" in decoded_line:
+                        time_parts = decoded_line.split("time=")[1].split()[0]
+                        logging.info(f"録画進行中: {time_parts}")
+
+            # 短時間に多数のエラーが発生した場合、プロセスを再起動するべきと判断
+            if error_count > 15:
+                logging.error("多数のFFmpegエラーが検出されました。プロセスの再起動が必要な可能性があります。")
+                break
 
         except Exception as e:
             logging.error(f"Error in FFmpeg output monitoring: {e}")
             break
 
-def terminate_process(process, timeout=5):
+def terminate_process(process, timeout=10):
     """
     プロセスを適切に終了させる
 
@@ -263,12 +326,15 @@ def terminate_process(process, timeout=5):
                 process.stdin.write(b'q\n')
                 process.stdin.flush()
                 logging.info("Sent 'q' command to FFmpeg process")
-
             except Exception as e:
                 logging.error(f"Error sending q command: {e}")
 
         # 少し待ってからプロセスの状態を確認
-        time.sleep(2)
+        for i in range(3):  # 3回試行（より確実に終了させる）
+            time.sleep(1)
+            if process.poll() is not None:
+                logging.info("Process terminated gracefully")
+                break
 
         # プロセスがまだ実行中なら、taskkillを使用
         if process.poll() is None:
@@ -276,7 +342,6 @@ def terminate_process(process, timeout=5):
                 subprocess.run(['taskkill', '/F', '/T', '/PID', str(process.pid)], 
                               check=True, capture_output=True)
                 logging.info(f"Successfully killed process using taskkill")
-
             except Exception as e:
                 logging.error(f"Error using taskkill: {e}")
 
@@ -284,10 +349,12 @@ def terminate_process(process, timeout=5):
                 try:
                     parent = psutil.Process(process.pid)
                     for child in parent.children(recursive=True):
-                        child.kill()
+                        try:
+                            child.kill()
+                        except:
+                            pass
                     parent.kill()
                     logging.info("Killed process using psutil")
-
                 except Exception as sub_e:
                     logging.error(f"Failed to kill process with psutil: {sub_e}")
 
@@ -295,18 +362,22 @@ def terminate_process(process, timeout=5):
         try:
             process.wait(timeout=timeout)
             logging.info("Process has terminated")
-
         except subprocess.TimeoutExpired:
             logging.warning("Process did not terminate within timeout")
+            # 最終手段：Windows固有のkill
+            try:
+                os.system(f"taskkill /F /PID {process.pid} /T")
+                logging.info("Used os.system taskkill as last resort")
+            except:
+                pass
 
         # ストリームのクローズ
         for stream in [process.stdin, process.stdout, process.stderr]:
             if stream:
                 try:
                     stream.close()
-
                 except Exception as e:
-                    logging.error(f"Error closing stream: {e}")
+                    pass  # エラーログ抑制
 
     except Exception as e:
         logging.error(f"Error terminating process: {e}")
@@ -320,79 +391,81 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, 
         output_path (str): .m3u8ファイルの出力パス
         segment_path (str): セグメントファイルのパスパターン
         segment_time (int): セグメント長（秒）
-        list_size (int): プレイリストのサイズ
+        list_size (int): プレイリストサイズ
 
     Returns:
         list: FFmpegコマンドのリスト
     """
     return [
         'ffmpeg',
-        '-rtsp_transport', 'tcp',             # TCPトランスポートを明示的に使用
-        '-buffer_size', '30720k',             # バッファサイズを大幅に増加
+        '-rtsp_transport', 'tcp',                         # TCPトランスポートを明示的に使用
+        '-buffer_size', config.FFMPEG_BUFFER_SIZE,        # 設定値を使用
         '-use_wallclock_as_timestamps', '1',
         '-i', rtsp_url,
         '-reset_timestamps', '1',
         '-reconnect', '1',
         '-reconnect_at_eof', '1',
         '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',          # 再接続遅延を増加
-        '-thread_queue_size', '32768',        # スレッドキューサイズを大幅に増加
-        '-r', '30',                           # フレームレート（カメラに合わせて調整）
-        '-g', '60',                           # GOPサイズ（2秒間隔）
-        '-sc_threshold', '0',                 # シーン変更検出しきい値を0に
-        '-c:v', 'libx264',                    # ビデオを再エンコード
-        '-preset', 'veryfast',                # 高速かつ画質も重視
-        '-tune', 'zerolatency',               # 低遅延用設定
-        '-crf', '20',                         # 画質（値が小さいほど高画質、20は高画質寄り）
-        '-b:v', '2500k',                      # ビデオビットレート
-        '-maxrate', '3500k',                  # 最大ビットレート
-        '-bufsize', '5000k',                  # バッファサイズ
+        '-reconnect_delay_max', '5',                      # 再接続遅延
+        '-thread_queue_size', str(config.FFMPEG_THREAD_QUEUE_SIZE),  # 設定値を使用
+        '-g', '30',                                       # GOPサイズを減らす
+        '-sc_threshold', '0',                             # シーン変更検出しきい値を0に
+        '-c:v', 'libx264',                                # ビデオを再エンコード
+        '-preset', 'ultrafast',                           # 最も速いエンコードプリセット
+        '-tune', 'zerolatency',                           # 低遅延用設定
+        '-crf', '28',                                     # 画質設定を軽量化（数値が大きいほど低画質）
+        '-b:v', '1500k',                                  # ビットレートを軽量化
+        '-maxrate', '2000k',                              # 最大ビットレートを軽量化
+        '-bufsize', '3000k',                              # バッファサイズ
+        '-pix_fmt', 'yuv420p',                            # 互換性の高いピクセルフォーマット
+        '-profile:v', 'baseline',                         # より互換性の高いプロファイル
+        '-level', '3.0',                                  # 互換性を優先
         '-c:a', 'aac',
-        '-b:a', '128k',
+        '-b:a', '96k',                                    # 音声ビットレート
         '-ar', '44100',
         '-ac', '2',
-        '-f', 'hls',                          # HLS形式出力
-        '-hls_time', str(segment_time),       # セグメント長
-        '-hls_list_size', str(list_size),     # プレイリストサイズ
+        '-f', 'hls',                                      # HLS形式出力
+        '-hls_time', str(segment_time),                   # セグメント長
+        '-hls_list_size', str(list_size),                 # プレイリストサイズ
         '-hls_flags', 'delete_segments+append_list+program_date_time',  # HLSフラグ
-        '-hls_segment_filename', segment_path, # セグメントファイルパス
-        '-hls_allow_cache', '0',              # キャッシュ無効化
-        '-loglevel', 'warning',               # ログレベルを制限
+        '-hls_segment_filename', segment_path,            # セグメントファイルパス
+        '-hls_allow_cache', '0',                          # キャッシュ無効化
+        '-loglevel', 'warning',                           # ログレベルを制限
         output_path
     ]
 
-def get_ffmpeg_record_command(rtsp_url, output_path):
+def get_ffmpeg_record_command(rtsp_url, output_path, camera_id=None):
     """
     録画用のFFmpegコマンドを生成
 
     Args:
         rtsp_url (str): RTSPストリームURL
         output_path (str): 録画ファイルの出力パス
+        camera_id (str, optional): カメラID
 
     Returns:
         list: FFmpegコマンドのリスト
     """
+    # 全てのカメラでHLSストリームを使用
+    logging.info(f"カメラ{camera_id}にHLS録画コマンドを使用します")
+    
+    # HLSストリームをソースとして使用
+    hls_url = f"http://localhost:5000/system/cam/tmp/{camera_id}/{camera_id}.m3u8"
+    logging.info(f"カメラ{camera_id}はRTSPではなくHLSソース（{hls_url}）から録画します")
+    
     return [
         'ffmpeg',
-        '-rtsp_transport', 'tcp',             # TCPトランスポートを使用
-        '-use_wallclock_as_timestamps', '1',  # タイムスタンプの処理を改善
-        '-i', rtsp_url,
-        '-reset_timestamps', '1',             # タイムスタンプをリセット
-        '-reconnect', '1',                    # 接続が切れた場合に再接続を試みる
-        '-reconnect_at_eof', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '2',          # 最大再接続遅延を2秒に設定
-        '-thread_queue_size', '1024',         # 入力バッファサイズを増やす
-        '-analyzeduration', '2147483647',     # 入力ストリームの分析時間を延長
-        '-probesize', '2147483647',           # プローブサイズを増やす
-        '-c:v', 'copy',                       # ビデオコーデックをそのままコピー
-        '-c:a', 'aac',                        # 音声コーデックをAACに設定
-        '-b:a', '128k',                       # 音声ビットレート
-        '-ar', '44100',                       # サンプリングレート
-        '-ac', '2',                           # ステレオ音声
-        '-async', '1',                        # 音声の同期モード
-        '-max_delay', '500000',               # 最大遅延時間（マイクロ秒）
-        '-movflags', '+faststart',            # ファストスタートフラグを設定
-        '-y',                                 # 既存のファイルを上書き
+        '-protocol_whitelist', 'file,http,https,tcp,tls',  # 許可するプロトコル
+        '-i', hls_url,                                    # HLSストリームを入力として使用
+        '-c:v', 'copy',                                   # ビデオコーデックをそのままコピー
+        '-c:a', 'aac',                                    # 音声コーデック
+        '-b:a', '128k',                                   # 音声ビットレート
+        '-ar', '44100',                                   # サンプリングレート
+        '-ac', '2',                                       # ステレオ音声
+        '-max_muxing_queue_size', '1024',                 # キューサイズ
+        '-fflags', '+genpts+discardcorrupt',              # 破損フレームを破棄し、PTSを生成
+        '-avoid_negative_ts', 'make_zero',                # 負のタイムスタンプを回避
+        '-movflags', '+faststart+frag_keyframe',          # MP4ファイル最適化
+        '-y',                                             # 既存のファイルを上書き
         output_path
     ]
