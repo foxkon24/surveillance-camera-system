@@ -6,6 +6,7 @@ import os
 import logging
 import sys
 import time
+import json
 
 # 自作モジュールのインポート
 import config
@@ -167,7 +168,10 @@ def index_single():
     # ストリームの初期化を少し長めに待つ
     time.sleep(2)
 
-    return render_template('single.html', camera=target_camera)
+    # JSONとしてカメラデータを渡す
+    camera_json = json.dumps(target_camera)
+
+    return render_template('single.html', camera=target_camera, camera_json=camera_json)
 
 @app.route('/system/cam/backup/')
 def backup_recordings():
@@ -188,44 +192,20 @@ def initialize_app():
         logging.info(f"実行パス: {os.getcwd()}")
         logging.info(f"Pythonバージョン: {sys.version}")
         logging.info(f"OSバージョン: {os.name}")
-        
-        # システム情報を取得してログに出力
-        config.get_system_info()
 
         # 基本ディレクトリの確認
         for directory in [config.BASE_PATH, config.TMP_PATH, config.RECORD_PATH, config.BACKUP_PATH]:
             fs_utils.ensure_directory_exists(directory)
-            
-        # サブディレクトリの作成（1-50）
-        for directory_type in [config.TMP_PATH, config.RECORD_PATH, config.BACKUP_PATH]:
-            for i in range(1, 51):
-                camera_dir = os.path.join(directory_type, str(i))
-                fs_utils.ensure_directory_exists(camera_dir)
 
         # 設定ファイルの確認
         if not config.check_config_file():
             logging.error("設定ファイルが見つかりません")
             return False
 
-        # FFmpegの確認
-        if not config.check_ffmpeg():
-            logging.error("FFmpegが見つかりません")
-            return False
-            
-        # 残存するffmpegプロセスを終了
-        ffmpeg_utils.kill_ffmpeg_processes()
-        logging.info("既存のFFmpegプロセスをクリーンアップしました")
-
         # カメラ設定の読み込み
         cameras = camera_utils.read_config()
         if not cameras:
             logging.warning("有効なカメラ設定が見つかりません")
-            
-        # ディスク容量の確認
-        available_space = fs_utils.get_free_space(config.RECORD_PATH)
-        required_space = 1024 * 1024 * 1024 * config.MIN_DISK_SPACE_GB * len(cameras)
-        if available_space < required_space:
-            logging.warning(f"ディスク容量が少ない可能性があります。利用可能: {available_space / (1024**3):.2f} GB, カメラ数: {len(cameras)}")
 
         # ストリーミングシステムの初期化
         streaming.initialize_streaming()
@@ -233,12 +213,15 @@ def initialize_app():
         # 録画システムの初期化
         recording.initialize_recording()
 
-        logging.info("アプリケーションの初期化が完了しました")
+        # FFmpegの確認
+        if not config.check_ffmpeg():
+            logging.error("FFmpegが見つかりません")
+            return False
+
         return True
 
     except Exception as e:
         logging.error(f"初期化エラー: {e}")
-        logging.exception("詳細なエラー情報:")
         return False
 
 if __name__ == '__main__':
