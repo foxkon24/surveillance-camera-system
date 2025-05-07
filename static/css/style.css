@@ -145,18 +145,19 @@ a {
     display: flex;
     flex-wrap: wrap;
     gap: 10px;
-    justify-content: flex-start;
+    justify-content: center;
     padding: 10px;
 }
 
 .camera {
-    flex: 0 0 auto;
+    flex: 0 0 calc(33.333% - 20px); /* 3台で1行、gap考慮 */
+    max-width: calc(33.333% - 20px);
     background: #f5f5f5;
     padding: 10px;
     border-radius: 8px;
     box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    width: 340px;
     margin-bottom: 10px;
+    box-sizing: border-box;
 }
 
 .camera-header {
@@ -280,3 +281,49 @@ h1, h2, h3, h4, h5, p, ul, ol, li, dl, dt, dd, form, figure, form { margin: 0px;
 img { border: none; max-width: 100%; width: auto; height: auto; vertical-align: middle; }
 
 iframe { width: 100%; }
+
+/* single.html専用のスタイル - カメラサイズを拡大 */
+.single-view .camera {
+    max-width: 90%;
+    margin: 0 auto;
+}
+
+.single-view .video-container {
+    width: 100%;
+    max-width: 960px;
+    margin: 0 auto;
+    position: relative; /* 位置指定のために必要 */
+}
+
+.single-view video {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 4/3;
+    max-height: 70vh;
+    object-fit: contain;
+}
+
+/* single.htmlでのステータス表示調整 */
+.single-view .stream-status {
+    position: absolute;
+    bottom: 20px;
+    left: 20px;
+    background-color: rgba(0, 0, 0, 0.7);
+    color: white;
+    padding: 5px 12px;
+    border-radius: 4px;
+    font-size: 14px;
+    z-index: 10;
+    font-weight: bold;
+}
+
+.single-view .loading-spinner {
+    width: 60px;
+    height: 60px;
+    border-width: 6px;
+}
+
+.single-view .error-overlay {
+    font-size: 16px;
+    padding: 15px 20px;
+}
