@@ -29,7 +29,6 @@ def check_rtsp_connection(rtsp_url, timeout=15):
             'ffprobe',
             '-v', 'error',
             '-rtsp_transport', 'tcp',
-            '-timeout', '10000000',  # 10秒のソケットタイムアウト（マイクロ秒）
             '-i', rtsp_url,
             '-show_entries', 'format=duration',
             '-of', 'default=noprint_wrappers=1:nokey=1',
@@ -384,7 +383,7 @@ def terminate_process(process, timeout=10):
 
 def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, list_size=5):
     """
-    HLSストリーミング用のFFmpegコマンドを生成
+    HLSストリーミング用のFFmpegコマンドを生成 - Windows & FFmpeg 7.1.1互換
 
     Args:
         rtsp_url (str): RTSPストリームURL
@@ -398,45 +397,41 @@ def get_ffmpeg_hls_command(rtsp_url, output_path, segment_path, segment_time=2, 
     """
     return [
         'ffmpeg',
-        '-rtsp_transport', 'tcp',                         # TCPトランスポートを明示的に使用
-        '-buffer_size', config.FFMPEG_BUFFER_SIZE,        # 設定値を使用
-        '-use_wallclock_as_timestamps', '1',
-        '-i', rtsp_url,
-        '-reset_timestamps', '1',
-        '-reconnect', '1',
-        '-reconnect_at_eof', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',                      # 再接続遅延
-        '-thread_queue_size', str(config.FFMPEG_THREAD_QUEUE_SIZE),  # 設定値を使用
-        '-g', '30',                                       # GOPサイズを減らす
-        '-sc_threshold', '0',                             # シーン変更検出しきい値を0に
-        '-c:v', 'libx264',                                # ビデオを再エンコード
-        '-preset', 'ultrafast',                           # 最も速いエンコードプリセット
-        '-tune', 'zerolatency',                           # 低遅延用設定
-        '-crf', '28',                                     # 画質設定を軽量化（数値が大きいほど低画質）
-        '-b:v', '1500k',                                  # ビットレートを軽量化
-        '-maxrate', '2000k',                              # 最大ビットレートを軽量化
-        '-bufsize', '3000k',                              # バッファサイズ
-        '-pix_fmt', 'yuv420p',                            # 互換性の高いピクセルフォーマット
-        '-profile:v', 'baseline',                         # より互換性の高いプロファイル
-        '-level', '3.0',                                  # 互換性を優先
-        '-c:a', 'aac',
-        '-b:a', '96k',                                    # 音声ビットレート
-        '-ar', '44100',
-        '-ac', '2',
-        '-f', 'hls',                                      # HLS形式出力
-        '-hls_time', str(segment_time),                   # セグメント長
-        '-hls_list_size', str(list_size),                 # プレイリストサイズ
+        '-rtsp_transport', 'tcp',                     # TCPトランスポートを明示的に使用
+        '-buffer_size', config.FFMPEG_BUFFER_SIZE,    # バッファサイズを設定値から使用
+        '-i', rtsp_url,                               # 入力ストリーム
+        '-r', '30',                                   # 30fpsを明示的に指定（要件を満たす）
+        '-reset_timestamps', '1',                     # タイムスタンプリセット
+        '-thread_queue_size', str(config.FFMPEG_THREAD_QUEUE_SIZE),  # キューサイズ
+        '-g', '30',                                   # GOPサイズを30フレームに設定（30fps対応）
+        '-sc_threshold', '0',                         # シーン変更検出閾値
+        '-c:v', 'libx264',                            # ビデオコーデック
+        '-preset', 'ultrafast',                       # 最速エンコード設定
+        '-tune', 'zerolatency',                       # 低遅延設定
+        '-crf', '28',                                 # 画質設定
+        '-b:v', '1500k',                              # ビデオビットレート
+        '-maxrate', '2000k',                          # 最大ビットレート
+        '-bufsize', '3000k',                          # バッファサイズ
+        '-pix_fmt', 'yuv420p',                        # ピクセルフォーマット
+        '-profile:v', 'baseline',                     # プロファイル
+        '-level', '3.0',                              # レベル
+        '-c:a', 'aac',                                # 音声コーデック
+        '-b:a', '96k',                                # 音声ビットレート
+        '-ar', '44100',                               # サンプリングレート
+        '-ac', '2',                                   # チャンネル数
+        '-f', 'hls',                                  # HLS形式出力
+        '-hls_time', str(segment_time),               # セグメント長
+        '-hls_list_size', str(list_size),             # プレイリストサイズ
         '-hls_flags', 'delete_segments+append_list+program_date_time',  # HLSフラグ
-        '-hls_segment_filename', segment_path,            # セグメントファイルパス
-        '-hls_allow_cache', '0',                          # キャッシュ無効化
-        '-loglevel', 'warning',                           # ログレベルを制限
+        '-hls_segment_filename', segment_path,        # セグメントファイルパス
+        '-hls_allow_cache', '0',                      # キャッシュ無効化
+        '-loglevel', 'warning',                       # ログレベル
         output_path
     ]
 
 def get_ffmpeg_record_command(rtsp_url, output_path, camera_id=None):
     """
-    録画用のFFmpegコマンドを生成
+    録画用のFFmpegコマンドを生成 - Windows & FFmpeg 7.1.1互換
 
     Args:
         rtsp_url (str): RTSPストリームURL
@@ -446,17 +441,15 @@ def get_ffmpeg_record_command(rtsp_url, output_path, camera_id=None):
     Returns:
         list: FFmpegコマンドのリスト
     """
-    # 全てのカメラでHLSストリームを使用
-    logging.info(f"カメラ{camera_id}にHLS録画コマンドを使用します")
-    
     # HLSストリームをソースとして使用
     hls_url = f"http://localhost:5000/system/cam/tmp/{camera_id}/{camera_id}.m3u8"
     logging.info(f"カメラ{camera_id}はRTSPではなくHLSソース（{hls_url}）から録画します")
     
     return [
         'ffmpeg',
-        '-protocol_whitelist', 'file,http,https,tcp,tls',  # 許可するプロトコル
-        '-i', hls_url,                                    # HLSストリームを入力として使用
+        '-protocol_whitelist', 'file,http,https,tcp,tls',  # 許可プロトコル
+        '-i', hls_url,                                    # HLSストリーム入力
+        '-r', '30',                                       # 30fpsを明示的に指定（要件を満たす）
         '-c:v', 'copy',                                   # ビデオコーデックをそのままコピー
         '-c:a', 'aac',                                    # 音声コーデック
         '-b:a', '128k',                                   # 音声ビットレート

@@ -14,6 +14,10 @@ TMP_PATH = os.path.join(BASE_PATH, 'tmp')
 RECORD_PATH = os.path.join(BASE_PATH, 'record')
 BACKUP_PATH = os.path.join(BASE_PATH, 'backup')
 
+# FFmpegバッファ設定
+FFMPEG_BUFFER_SIZE = '8192k'  # FFmpegのバッファサイズ
+FFMPEG_THREAD_QUEUE_SIZE = 1024  # FFmpegのスレッドキューサイズ
+
 # 実行ファイル名に基づいてログファイル名を設定
 def get_log_path():
     """実行ファイル名に基づいてログファイル名を決定"""
