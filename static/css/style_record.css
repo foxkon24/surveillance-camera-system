@@ -213,7 +213,7 @@ a {
 }
 
 /* アクションボタン */
-.play-btn, .download-btn {
+.play-btn, .download-btn, .inline-play-btn {
     display: inline-block;
     padding: 5px 10px;
     margin: 0 5px;
@@ -226,8 +226,16 @@ a {
     font-size: 12px;
 }
 
-.play-btn:hover, .download-btn:hover {
+.play-btn:hover, .download-btn:hover, .inline-play-btn:hover {
     background-color: #0052a3;
+}
+
+.inline-play-btn {
+    background-color: #28a745;
+}
+
+.inline-play-btn:hover {
+    background-color: #218838;
 }
 
 /* 状態表示 */
