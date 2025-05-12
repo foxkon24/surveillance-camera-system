@@ -7,6 +7,8 @@ import logging
 import psutil
 import time
 import shutil
+import random
+import string
 from datetime import datetime
 
 def ensure_directory_exists(path):
@@ -96,6 +98,15 @@ def get_free_space(path):
         # エラーが発生した場合は最小限の容量を返す
         return 1024 * 1024 * 1024  # 1GB
 
+def generate_file_suffix():
+    """
+    ファイル名の重複を避けるためのランダムな接尾辞を生成
+
+    Returns:
+        str: 3文字のランダムな文字列
+    """
+    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=3))
+
 def get_record_file_path(base_path, camera_id):
     """
     録画ファイルのパスを生成する関数
@@ -107,14 +118,22 @@ def get_record_file_path(base_path, camera_id):
     Returns:
         str: 録画ファイルの完全パス
     """
-    timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
-    filename = f"{camera_id}_{timestamp}.mp4"
-    camera_dir = os.path.join(base_path, str(camera_id))
+    # まずカメラIDに対応するディレクトリを確保
+    camera_dir = os.path.join(base_path, camera_id)
     ensure_directory_exists(camera_dir)
-    full_path = os.path.join(camera_dir, filename)
-    logging.info(f"Generated file path: {full_path}")
-
-    return full_path
+    
+    # 現在の日時をフォーマット
+    now = datetime.now()
+    date_str = now.strftime("%Y%m%d")
+    time_str = now.strftime("%H%M%S")
+    
+    # ランダムサフィックスは不要なので削除
+    # ファイル名の形式: {カメラID}_{日付}{時間}.mp4
+    file_name = f"{camera_id}_{date_str}{time_str}.mp4"
+    file_path = os.path.join(camera_dir, file_name)
+    
+    logging.info(f"Generated record file path: {file_path}")
+    return file_path
 
 def cleanup_directory(directory, file_pattern='', max_age_seconds=None, max_files=None):
     """
@@ -357,4 +376,222 @@ def repair_mp4_file(file_path):
         
     except Exception as e:
         logging.error(f"Error checking/repairing file {file_path}: {e}")
+        return False
+
+def get_directory_size(path):
+    """
+    ディレクトリの合計サイズをバイト単位で取得
+
+    Args:
+        path (str): サイズを取得するディレクトリパス
+
+    Returns:
+        int: ディレクトリサイズ（バイト）
+    """
+    try:
+        if not os.path.exists(path):
+            logging.warning(f"Directory does not exist: {path}")
+            return 0
+            
+        total_size = 0
+        for dirpath, dirnames, filenames in os.walk(path):
+            for f in filenames:
+                fp = os.path.join(dirpath, f)
+                try:
+                    total_size += os.path.getsize(fp)
+                except OSError as e:
+                    logging.warning(f"Error getting size of {fp}: {e}")
+                    
+        return total_size
+        
+    except Exception as e:
+        logging.error(f"Error calculating directory size for {path}: {e}")
+        return 0
+
+def format_size(size_bytes):
+    """
+    バイト数を読みやすい単位にフォーマット
+
+    Args:
+        size_bytes (int): バイト単位のサイズ
+
+    Returns:
+        str: フォーマットされたサイズ文字列
+    """
+    try:
+        # ゼロやマイナス値の処理
+        if size_bytes <= 0:
+            return "0 B"
+            
+        # 単位の定義
+        units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
+        
+        # 適切な単位を計算
+        i = 0
+        while size_bytes >= 1024 and i < len(units) - 1:
+            size_bytes /= 1024
+            i += 1
+            
+        # 小数点以下2桁でフォーマット
+        return f"{size_bytes:.2f} {units[i]}"
+        
+    except Exception as e:
+        logging.error(f"Error formatting size: {e}")
+        return f"{size_bytes} B"
+
+def clean_small_recordings(base_path, min_size_kb=1024):
+    """
+    指定されたサイズより小さい録画ファイルを削除する
+
+    Args:
+        base_path (str): 録画ファイルの基本ディレクトリ
+        min_size_kb (int): 最小ファイルサイズ（KB）
+
+    Returns:
+        int: 削除されたファイル数
+    """
+    min_size = min_size_kb * 1024  # KB -> バイトに変換
+    deleted_count = 0
+
+    try:
+        logging.info(f"小さい録画ファイルのクリーンアップを開始します: {base_path}")
+        
+        # ベースディレクトリが存在しない場合は終了
+        if not os.path.exists(base_path):
+            logging.warning(f"ディレクトリが存在しません: {base_path}")
+            return 0
+            
+        # カメラIDごとのディレクトリを処理
+        for camera_id in os.listdir(base_path):
+            camera_dir = os.path.join(base_path, camera_id)
+            if not os.path.isdir(camera_dir):
+                continue
+
+            # ディレクトリ内のファイルを処理
+            mp4_files = []
+            
+            # まずはすべてのMP4ファイルを収集
+            for file_name in os.listdir(camera_dir):
+                # MP4ファイルのみを対象
+                if not file_name.endswith('.mp4'):
+                    continue
+                    
+                file_path = os.path.join(camera_dir, file_name)
+                if not os.path.isfile(file_path):
+                    continue
+                
+                # ファイルサイズを取得
+                try:
+                    file_size = os.path.getsize(file_path)
+                    mtime = os.path.getmtime(file_path)
+                    
+                    # ファイル情報を保存
+                    mp4_files.append({
+                        'path': file_path,
+                        'name': file_name,
+                        'size': file_size,
+                        'mtime': mtime
+                    })
+                except Exception as size_err:
+                    logging.error(f"ファイルサイズ取得エラー: {file_path} - {size_err}")
+            
+            # 似たタイムスタンプのファイルをグループ化して、小さいファイルを削除
+            # 時間でソート
+            mp4_files.sort(key=lambda x: x['mtime'])
+            
+            # 類似のタイムスタンプを持つファイルを検索（10秒以内の違い）
+            for i in range(len(mp4_files)):
+                current_file = mp4_files[i]
+                
+                # すでに処理済みなら次へ
+                if current_file.get('processed', False):
+                    continue
+                
+                # 同じ時間帯のファイルを探す
+                similar_files = []
+                for j in range(len(mp4_files)):
+                    if i != j and not mp4_files[j].get('processed', False):
+                        time_diff = abs(current_file['mtime'] - mp4_files[j]['mtime'])
+                        # 10秒以内の時間差のファイルをグループ化
+                        if time_diff < 10:
+                            similar_files.append(mp4_files[j])
+                
+                # 類似ファイルが見つかった場合、サイズで比較
+                if similar_files:
+                    similar_files.append(current_file)  # 現在のファイルも含める
+                    
+                    # サイズで降順ソート
+                    similar_files.sort(key=lambda x: x['size'], reverse=True)
+                    
+                    # 最大サイズのファイル以外を削除
+                    for file_idx in range(1, len(similar_files)):
+                        file_to_delete = similar_files[file_idx]
+                        
+                        # サイズが小さくて削除対象
+                        try:
+                            os.remove(file_to_delete['path'])
+                            deleted_count += 1
+                            logging.info(f"重複録画ファイルを削除しました: {file_to_delete['path']} ({file_to_delete['size']/1024:.2f} KB)")
+                            # 処理済みとしてマーク
+                            for k in range(len(mp4_files)):
+                                if mp4_files[k]['path'] == file_to_delete['path']:
+                                    mp4_files[k]['processed'] = True
+                                    break
+                        except Exception as e:
+                            logging.error(f"ファイル削除エラー: {file_to_delete['path']} - {e}")
+                    
+                    # 現在のファイルも処理済みとしてマーク
+                    current_file['processed'] = True
+                
+            # 残りの小さなファイルを処理
+            for file_info in mp4_files:
+                if not file_info.get('processed', False) and file_info['size'] < min_size:
+                    try:
+                        os.remove(file_info['path'])
+                        deleted_count += 1
+                        logging.info(f"小さい録画ファイルを削除しました: {file_info['path']} ({file_info['size']/1024:.2f} KB)")
+                    except Exception as e:
+                        logging.error(f"ファイル削除エラー: {file_info['path']} - {e}")
+
+        logging.info(f"クリーンアップ完了: {deleted_count}ファイルを削除しました")
+        return deleted_count
+
+    except Exception as e:
+        logging.error(f"録画ファイルのクリーンアップ中にエラーが発生しました: {e}")
+        return 0
+
+def remove_directory(dir_path):
+    """
+    ディレクトリとその中のすべてのファイルを完全に削除します
+    
+    Args:
+        dir_path (str): 削除するディレクトリのパス
+        
+    Returns:
+        bool: 操作が成功したかどうか
+    """
+    try:
+        if not os.path.exists(dir_path):
+            return True
+            
+        # ディレクトリ内のすべてのファイルを削除
+        for filename in os.listdir(dir_path):
+            file_path = os.path.join(dir_path, filename)
+            try:
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+                    logging.debug(f"ファイルを削除しました: {file_path}")
+                elif os.path.isdir(file_path):
+                    # サブディレクトリも再帰的に削除
+                    remove_directory(file_path)
+            except Exception as e:
+                logging.warning(f"ファイル {file_path} の削除に失敗: {e}")
+                
+        # ディレクトリ自体を削除
+        os.rmdir(dir_path)
+        logging.info(f"ディレクトリを削除しました: {dir_path}")
+        return True
+    
+    except Exception as e:
+        logging.error(f"ディレクトリ {dir_path} の削除中にエラーが発生しました: {e}")
         return False

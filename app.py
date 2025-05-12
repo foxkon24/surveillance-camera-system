@@ -8,6 +8,7 @@ import sys
 import time
 import json
 from datetime import datetime
+import fractions
 
 # 自作モジュールのインポート
 import config
@@ -234,11 +235,11 @@ def stop_all_recordings_route():
 def index():
     """メインページ"""
     cameras = camera_utils.read_config()
+    
+    # ストリームが開始されているか確認し、開始されていなければ開始する
     for camera in cameras:
-        streaming.get_or_start_streaming(camera)
-
-    # ストリームの初期化を少し長めに待つ
-    time.sleep(2)
+        if camera['id'] not in streaming.streaming_processes:
+            streaming.get_or_start_streaming(camera)
 
     return render_template('index.html', cameras=cameras)
 
@@ -439,47 +440,34 @@ def cleanup_old_recordings():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 def initialize_app():
-    """アプリケーション初期化"""
-    try:
-        # ロギングの設定
-        config.setup_logging()
+    """アプリケーションの初期化"""
+    # ロギングの設定
+    config.setup_logging()
 
-        # ログの初期メッセージ
-        logging.info("============= アプリケーション起動 =============")
-        logging.info(f"実行パス: {os.getcwd()}")
-        logging.info(f"Pythonバージョン: {sys.version}")
-        logging.info(f"OSバージョン: {os.name}")
+    # 設定ファイルの確認
+    if not config.check_config_file():
+        logging.error("設定ファイルが見つかりません。アプリケーションを終了します。")
+        sys.exit(1)
 
-        # 基本ディレクトリの確認
-        for directory in [config.BASE_PATH, config.TMP_PATH, config.RECORD_PATH, config.BACKUP_PATH]:
-            fs_utils.ensure_directory_exists(directory)
-
-        # 設定ファイルの確認
-        if not config.check_config_file():
-            logging.error("設定ファイルが見つかりません")
-            return False
-
-        # カメラ設定の読み込み
-        cameras = camera_utils.read_config()
-        if not cameras:
-            logging.warning("有効なカメラ設定が見つかりません")
-
-        # ストリーミングシステムの初期化
-        streaming.initialize_streaming()
-
-        # 録画システムの初期化
-        recording.initialize_recording()
-
-        # FFmpegの確認
-        if not config.check_ffmpeg():
-            logging.error("FFmpegが見つかりません")
-            return False
-
-        return True
-
-    except Exception as e:
-        logging.error(f"初期化エラー: {e}")
-        return False
+    # FFmpegの確認
+    if not config.check_ffmpeg():
+        logging.error("FFmpegが見つかりません。アプリケーションを終了します。")
+        sys.exit(1)
+        
+    # 必要なディレクトリの作成
+    fs_utils.ensure_directory_exists(config.TMP_PATH)
+    fs_utils.ensure_directory_exists(config.RECORD_PATH)
+    fs_utils.ensure_directory_exists(config.BACKUP_PATH)
+    
+    # ストリーミング機能の初期化（自動的にすべてのカメラのストリーミングを開始します）
+    streaming.initialize_streaming()
+    
+    # 録画機能の初期化
+    recording.initialize_recording()
+    
+    logging.info("アプリケーションの初期化が完了しました")
+    
+    return True
 
 if __name__ == '__main__':
     try:
