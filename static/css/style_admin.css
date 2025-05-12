@@ -110,6 +110,20 @@ a {
     color: #333;
 }
 
+.control-group button { 
+    margin: 5px; 
+    padding: 8px 15px; 
+    background-color: #0066cc; 
+    color: white; 
+    border: none; 
+    border-radius: 4px; 
+    cursor: pointer; 
+}
+
+.control-group button:hover { 
+    background-color: #0052a3; 
+}
+
 .msg {
     grid-row: 4;
     grid-column: 1 / 7;
@@ -248,20 +262,8 @@ a {
     font-style: italic;
 }
 
-button {
-    margin: 5px;
-    padding: 8px 15px;
-    font-size: 14px;
-    background-color: #0066cc;
-    color: white;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background-color 0.3s;
-}
-
 button:hover {
-    background-color: #0052a3;
+    background-color: #666;
 }
 
 h1, h2, h3, h4, h5, p, ul, ol, li, dl, dt, dd, form, figure, form { margin: 0px; padding: 0px; font-size: 100%; font-weight: normal; }
@@ -269,3 +271,90 @@ h1, h2, h3, h4, h5, p, ul, ol, li, dl, dt, dd, form, figure, form { margin: 0px;
 img { border: none; max-width: 100%; width: auto; height: auto; vertical-align: middle; }
 
 iframe { width: 100%; }
+
+/* admin.html から移行したスタイル */
+.status { 
+    margin: 20px 0; 
+    padding: 15px; 
+    background-color: #f8f8f8; 
+    border-radius: 5px; 
+}
+
+.camera-list { 
+    margin-top: 20px; 
+}
+
+.camera-item { 
+    margin-bottom: 10px; 
+    padding: 10px; 
+    background-color: #f0f0f0; 
+    border-radius: 5px; 
+}
+
+.menu a { 
+    display: inline-block; 
+    margin-right: 15px; 
+    padding: 10px; 
+    background-color: #f0f0f0; 
+    text-decoration: none; 
+    color: #333; 
+    border-radius: 5px; 
+}
+
+.menu a:hover { 
+    background-color: #ddd; 
+}
+
+/* コンテナスタイル追加 */
+.container {
+    grid-row: 5;
+    grid-column: 1 / 7;
+    padding: 15px;
+    margin: 5px;
+    overflow-y: auto;
+}
+
+/* 録画管理のボタングループ */
+.button-group {
+    display: flex;
+    flex-direction: row;
+    gap: 10px;
+}
+
+/* カメラリストのグリッド表示 */
+.camera-list {
+    margin-top: 20px;
+}
+
+.camera-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 15px;
+    margin-top: 15px;
+}
+
+.camera-item {
+    margin-bottom: 0;
+    padding: 15px;
+    background-color: #f0f0f0;
+    border-radius: 5px;
+    border: 1px solid #ddd;
+    transition: all 0.3s ease;
+}
+
+.camera-item:hover {
+    box-shadow: 0 0 8px rgba(0,0,0,0.1);
+    transform: translateY(-2px);
+}
+
+.camera-item h3 {
+    margin: 0 0 10px 0;
+    padding-bottom: 5px;
+    border-bottom: 1px solid #ddd;
+    font-size: 1.1em;
+    font-weight: bold;
+}
+
+.camera-item p {
+    margin: 5px 0;
+}
