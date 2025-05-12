@@ -7,54 +7,169 @@
 function showStatusMessage(message, isError = false) {
     const msgElement = document.getElementById('status-message');
     if (msgElement) {
-        msgElement.textContent = message;
-        if (isError) {
-            msgElement.style.color = 'red';
-            msgElement.style.fontWeight = 'bold';
+        if (message && message.trim() !== '') {
+            msgElement.textContent = message;
+            if (isError) {
+                msgElement.style.color = 'red';
+                msgElement.style.fontWeight = 'bold';
+            } else {
+                msgElement.style.color = '';
+                msgElement.style.fontWeight = '';
+            }
+            msgElement.style.display = 'block';
+            msgElement.scrollIntoView({ behavior: 'smooth' });
         } else {
-            msgElement.style.color = '';
-            msgElement.style.fontWeight = '';
+            msgElement.style.display = 'none';
         }
-        msgElement.scrollIntoView({ behavior: 'smooth' });
     }
 }
 
+// ローディングオーバーレイの表示/非表示
+function setLoading(show) {
+    const overlay = document.getElementById('loading-overlay');
+    if (overlay) {
+        overlay.style.display = show ? 'flex' : 'none';
+    }
+}
+
+// 管理画面の初期化 - ページ読み込み時に呼ばれる
+function initializeAdminPage() {
+    // ローディング表示
+    setLoading(true);
+    
+    // システム状態を取得して表示
+    fetchSystemStatus();
+    
+    // カメラ情報を取得して表示
+    fetchCameraList()
+        .then(() => {
+            // すべての読み込みが完了したらローディングを非表示
+            setLoading(false);
+        })
+        .catch(error => {
+            console.error('初期化エラー:', error);
+            setLoading(false);
+        });
+}
+
+// システム状態を取得・表示する関数
+function fetchSystemStatus() {
+    return fetch('/system/cam/admin_data')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('システム状態の取得に失敗しました');
+            }
+            return response.json();
+        })
+        .then(data => {
+            // ディスク使用量を表示
+            const diskUsageElement = document.getElementById('disk-usage');
+            if (diskUsageElement && data.disk_usage) {
+                diskUsageElement.innerHTML = data.disk_usage;
+            }
+        })
+        .catch(error => {
+            console.error('システム状態取得エラー:', error);
+            // エラーメッセージを表示（必要に応じて）
+        });
+}
+
+// カメラリストを取得・表示する関数
+function fetchCameraList() {
+    return fetch('/system/cam/admin_data')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('カメラ情報の取得に失敗しました');
+            }
+            return response.json();
+        })
+        .then(data => {
+            const cameraListElement = document.getElementById('camera-list-container');
+            if (cameraListElement && data.cameras) {
+                // 既存の内容をクリア
+                cameraListElement.innerHTML = '';
+                
+                // 見出しを追加
+                const heading = document.createElement('h2');
+                heading.textContent = '登録カメラ一覧';
+                cameraListElement.appendChild(heading);
+                
+                if (data.cameras.length > 0) {
+                    // グリッドコンテナを作成
+                    const gridContainer = document.createElement('div');
+                    gridContainer.className = 'camera-grid';
+                    cameraListElement.appendChild(gridContainer);
+                    
+                    // カメラ情報を表示
+                    data.cameras.forEach(camera => {
+                        const cameraDiv = document.createElement('div');
+                        cameraDiv.className = 'camera-item';
+                        
+                        const cameraHeading = document.createElement('h3');
+                        cameraHeading.textContent = camera.name || `カメラ ${camera.id}`;
+                        cameraDiv.appendChild(cameraHeading);
+                        
+                        const idP = document.createElement('p');
+                        idP.textContent = `ID: ${camera.id}`;
+                        cameraDiv.appendChild(idP);
+                        
+                        const statusP = document.createElement('p');
+                        statusP.textContent = `状態: ${camera.status ? '録画中' : '停止中'}`;
+                        cameraDiv.appendChild(statusP);
+                        
+                        gridContainer.appendChild(cameraDiv);
+                    });
+                } else {
+                    // カメラが登録されていない場合
+                    const noCamera = document.createElement('p');
+                    noCamera.textContent = '登録されたカメラがありません';
+                    cameraListElement.appendChild(noCamera);
+                }
+            }
+        })
+        .catch(error => {
+            console.error('カメラリスト取得エラー:', error);
+            // エラーメッセージを表示（必要に応じて）
+        });
+}
+
 function startAllRecordings() {
-    showStatusMessage('全カメラの録画を開始しています...');
-    fetch('/stop_all_recordings', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-    .then(response => {
-        if (!response.ok) throw new Error('録画停止に失敗しました');
-        return response.json();
+    fetch('/start_all_recordings', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        }
     })
+    .then(response => response.json())
     .then(data => {
-        return fetch('/start_all_recordings', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-    })
-    .then(response => {
-        if (!response.ok) throw new Error('録画開始に失敗しました');
-        return response.json();
-    })
-    .then(data => {
-        showStatusMessage('全カメラの録画を開始しました');
-        setTimeout(() => { checkSystemStatus(false); }, 5000);
+        alert(data.status);
+        // ページをリロードする代わりにデータを再取得して表示を更新
+        fetchSystemStatus();
+        fetchCameraList();
     })
     .catch(error => {
-        showStatusMessage(`エラー: ${error.message}`, true);
+        console.error('Error:', error);
+        alert('エラーが発生しました');
     });
 }
 
 function stopAllRecordings() {
-    showStatusMessage('全カメラの録画を停止しています...');
-    fetch('/stop_all_recordings', { method: 'POST', headers: { 'Content-Type': 'application/json' } })
-    .then(response => {
-        if (!response.ok) throw new Error('録画停止に失敗しました');
-        return response.json();
+    fetch('/stop_all_recordings', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        }
     })
+    .then(response => response.json())
     .then(data => {
-        showStatusMessage('全カメラの録画を停止しました');
-        setTimeout(() => { checkSystemStatus(false); }, 3000);
+        alert(data.status);
+        // ページをリロードする代わりにデータを再取得して表示を更新
+        fetchSystemStatus();
+        fetchCameraList();
     })
     .catch(error => {
-        showStatusMessage(`エラー: ${error.message}`, true);
+        console.error('Error:', error);
+        alert('エラーが発生しました');
     });
 }
 
@@ -129,6 +244,8 @@ function cleanupOldRecordings() {
     });
 }
 
+// ページ読み込み時の処理
 document.addEventListener('DOMContentLoaded', function() {
-    checkSystemStatus(false);
+    // 管理画面の初期化
+    initializeAdminPage();
 });
