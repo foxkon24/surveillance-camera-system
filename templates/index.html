@@ -3,7 +3,12 @@
 <head>
     <meta http-equiv="content-type" content="text/html; charset=UTF-8">
     <meta name="viewport" content="width=device-width,initial-scale=1, minimum-scale=1, shrink-to-fit=no, user-scalable=no">
-    <link rel="stylesheet" href="/static/css/style.css">
+    <meta http-equiv="refresh" content="180">
+    <!-- キャッシュ制御の強化 -->
+    <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ timestamp }}">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.18/hls.js"></script>
     <title>監視カメラシステム</title>
 </head>
@@ -25,6 +30,11 @@
         {{ cameras|tojson }}
     </script>
 
-    <script src="/static/js/index.js"></script>
+    <!-- タイムスタンプをJavaScriptに渡す -->
+    <script>
+        const pageTimestamp = "{{ timestamp }}";
+    </script>
+
+    <script src="/static/js/index.js?v={{ timestamp }}"></script>
 </body>
 </html>
