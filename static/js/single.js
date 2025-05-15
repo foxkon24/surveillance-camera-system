@@ -98,8 +98,8 @@ function reloadStream() {
     setTimeout(() => initializePlayer(), RETRY_DELAY);
 }
 
-// サーバーサイドでカメラストリームを再起動
-function restartStream() {
+// サーバーサイドでカメラストリームを再起動（コールバック対応）
+function restartStream(callback) {
     updateStreamStatus('ストリーム再起動中...', false);
     
     // ローディングスピナーを表示
@@ -127,16 +127,34 @@ function restartStream() {
             // 5秒待ってからプレイヤーを再初期化（サーバー側の処理完了を待つ）
             setTimeout(() => {
                 initializePlayer();
+                // コールバックがある場合は実行
+                if (typeof callback === 'function') {
+                    setTimeout(callback, 3000); // 3秒後にコールバックを実行
+                }
             }, 5000);
         } else {
             updateStreamStatus(`再起動失敗: ${data.message || '不明なエラー'}`, true);
+            // エラーがあっても再初期化を試みる
+            setTimeout(() => {
+                initializePlayer();
+                // コールバックがある場合は実行
+                if (typeof callback === 'function') {
+                    setTimeout(callback, 3000);
+                }
+            }, 3000);
         }
     })
     .catch(error => {
         console.error(`Error restarting stream:`, error);
         updateStreamStatus('再起動リクエスト失敗', true);
         // エラーがあっても再初期化を試みる
-        setTimeout(() => initializePlayer(), 3000);
+        setTimeout(() => {
+            initializePlayer();
+            // コールバックがある場合は実行
+            if (typeof callback === 'function') {
+                setTimeout(callback, 3000);
+            }
+        }, 3000);
     });
 }
 
@@ -540,6 +558,16 @@ window.onload = function() {
     
     // 健全性チェックを設定
     setupHealthCheck();
+    
+    // 3分おきに自動更新するタイマーを設定
+    setTimeout(function() {
+        console.log("Restarting camera before page refresh");
+        // カメラ再起動後にページをリロード
+        restartStream(function() {
+            console.log("Auto-refreshing page after camera restart");
+            location.reload();
+        });
+    }, 180000); // 180秒 = 3分
 };
 
 // バックグラウンド切り替え時の処理
