@@ -6,10 +6,18 @@ import os
 import logging
 from datetime import datetime
 import config
+import time
+import requests
 
 # グローバル変数としてカメラ設定をキャッシュ
 _camera_cache = None
 _camera_names_cache = None
+# カメラの再起動試行回数を記録
+_camera_restart_attempts = {}
+# カメラ再起動の連続試行最大回数
+MAX_CAMERA_RESTART_ATTEMPTS = 3
+# カメラ再起動の間隔（秒）
+CAMERA_RESTART_INTERVAL = 60
 
 def read_config():
     """
@@ -210,3 +218,124 @@ def check_camera_availability(cameras=None):
         availability[camera_id] = available
         
     return availability
+
+def restart_camera_hardware(camera_id):
+    """
+    カメラのハードウェア再起動を試みる
+    
+    Args:
+        camera_id (str): 再起動するカメラID
+        
+    Returns:
+        bool: 再起動リクエストが成功したかどうか
+    """
+    global _camera_restart_attempts
+    
+    # カメラ情報を取得
+    camera = get_camera_by_id(camera_id)
+    if not camera:
+        logging.error(f"カメラID {camera_id} の情報が見つかりません")
+        return False
+    
+    # 連続再起動試行回数をチェック
+    current_time = time.time()
+    if camera_id in _camera_restart_attempts:
+        last_attempt, count = _camera_restart_attempts[camera_id]
+        
+        # 一定時間内に最大試行回数を超える場合は再起動しない
+        if current_time - last_attempt < CAMERA_RESTART_INTERVAL and count >= MAX_CAMERA_RESTART_ATTEMPTS:
+            logging.warning(f"カメラ {camera_id} の再起動試行回数が上限（{MAX_CAMERA_RESTART_ATTEMPTS}回）に達しました。次の再起動は {CAMERA_RESTART_INTERVAL - (current_time - last_attempt):.0f}秒後に可能になります。")
+            return False
+        
+        # 一定時間経過したらカウントをリセット
+        if current_time - last_attempt >= CAMERA_RESTART_INTERVAL:
+            count = 0
+            
+        # カウントを更新
+        _camera_restart_attempts[camera_id] = (current_time, count + 1)
+    else:
+        # 初回の試行
+        _camera_restart_attempts[camera_id] = (current_time, 1)
+    
+    # カメラのURLを構築
+    rtsp_url = camera['rtsp_url']
+    
+    # RTSPのURLからIPアドレスを抽出
+    try:
+        # rtsp://username:password@192.168.1.100:554/stream の形式を想定
+        # または rtsp://192.168.1.100:554/stream の形式を想定
+        parts = rtsp_url.split('@')
+        if len(parts) > 1:
+            # ユーザー名とパスワードがある場合
+            ip_part = parts[1].split('/')[0]
+        else:
+            # ユーザー名とパスワードがない場合
+            ip_part = parts[0].split('//')[1].split('/')[0]
+        
+        # ポート番号を除去
+        ip_address = ip_part.split(':')[0]
+        
+        # 認証情報の抽出
+        auth = None
+        if len(parts) > 1 and '@' in rtsp_url:
+            auth_part = rtsp_url.split('//')[1].split('@')[0]
+            if ':' in auth_part:
+                username, password = auth_part.split(':')
+                auth = (username, password)
+    except Exception as e:
+        logging.error(f"カメラ {camera_id} のRTSP URLからIPアドレスとユーザー情報の抽出に失敗しました: {e}")
+        return False
+    
+    # 再起動を試みる
+    success = False
+    
+    try:
+        # 一般的なIPカメラの再起動エンドポイントを試す
+        endpoints = [
+            # 一般的なHTTPベースの再起動エンドポイント
+            f"http://{ip_address}/restart",
+            f"http://{ip_address}/reboot",
+            f"http://{ip_address}/cgi-bin/restart.cgi",
+            f"http://{ip_address}/cgi-bin/reboot.cgi",
+            f"http://{ip_address}/api/restart",
+            f"http://{ip_address}/api/reboot"
+        ]
+        
+        for endpoint in endpoints:
+            try:
+                logging.info(f"カメラ {camera_id} の再起動を試みます: {endpoint}")
+                if auth:
+                    response = requests.get(endpoint, auth=auth, timeout=5)
+                else:
+                    response = requests.get(endpoint, timeout=5)
+                
+                if response.status_code == 200:
+                    logging.info(f"カメラ {camera_id} の再起動リクエスト成功: {endpoint}")
+                    success = True
+                    break
+            except requests.RequestException:
+                continue
+        
+        if not success:
+            logging.warning(f"カメラ {camera_id} の標準的な再起動方法が失敗しました")
+    except Exception as e:
+        logging.error(f"カメラ {camera_id} の再起動処理中にエラーが発生しました: {e}")
+    
+    return success
+
+def reset_camera_restart_attempts(camera_id=None):
+    """
+    カメラの再起動試行回数をリセットする
+    
+    Args:
+        camera_id (str, optional): リセットするカメラID。指定なしの場合は全カメラ
+    """
+    global _camera_restart_attempts
+    
+    if camera_id:
+        if camera_id in _camera_restart_attempts:
+            del _camera_restart_attempts[camera_id]
+            logging.info(f"カメラ {camera_id} の再起動試行回数をリセットしました")
+    else:
+        _camera_restart_attempts = {}
+        logging.info("全カメラの再起動試行回数をリセットしました")

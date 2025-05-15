@@ -1,6 +1,7 @@
 """
 設定管理モジュール
 共通の設定値やパスを管理します
+.envファイルから環境変数を読み込みます
 """
 import os
 import logging
@@ -8,21 +9,59 @@ import sys
 import subprocess
 from datetime import datetime
 import logging.handlers
+from dotenv import load_dotenv
+from pathlib import Path
+
+# .envファイルから環境変数を読み込む
+dotenv_path = Path(__file__).resolve().parent / '.env'
+load_dotenv(dotenv_path)
 
 # 基本パス設定
-BASE_PATH = os.path.join('D:\\', 'laragon', 'www', 'system', 'cam')
-CONFIG_PATH = os.path.join(BASE_PATH, 'cam_config.txt')
-TMP_PATH = os.path.join(BASE_PATH, 'tmp')
-RECORD_PATH = os.path.join(BASE_PATH, 'record')
-BACKUP_PATH = os.path.join(BASE_PATH, 'backup')
+BASE_PATH = os.getenv('BASE_PATH', os.path.join('D:\\', 'laragon', 'www', 'system', 'cam'))
+CONFIG_PATH = os.getenv('CONFIG_PATH', os.path.join(BASE_PATH, 'cam_config.txt'))
+TMP_PATH = os.getenv('TMP_PATH', os.path.join(BASE_PATH, 'tmp'))
+RECORD_PATH = os.getenv('RECORD_PATH', os.path.join(BASE_PATH, 'record'))
+BACKUP_PATH = os.getenv('BACKUP_PATH', os.path.join(BASE_PATH, 'backup'))
 
 # FFmpeg設定
-FFMPEG_PATH = 'ffmpeg'  # ffmpegコマンド（PATHに含まれている場合）
-# または絶対パスを指定: FFMPEG_PATH = 'C:\\path\\to\\ffmpeg.exe'
+FFMPEG_PATH = os.getenv('FFMPEG_PATH', 'ffmpeg')  # ffmpegコマンド（PATHに含まれている場合）
 
 # FFmpegバッファ設定
-FFMPEG_BUFFER_SIZE = '16384k'  # FFmpegのバッファサイズ（8192kから増加）
-FFMPEG_THREAD_QUEUE_SIZE = 2048  # FFmpegのスレッドキューサイズ（1024から増加）
+FFMPEG_BUFFER_SIZE = os.getenv('FFMPEG_BUFFER_SIZE', '32768k')  # FFmpegのバッファサイズを適正な値に調整
+FFMPEG_THREAD_QUEUE_SIZE = int(os.getenv('FFMPEG_THREAD_QUEUE_SIZE', '1024'))  # FFmpegのスレッドキューサイズを調整
+
+# 録画設定
+MAX_RECORDING_MINUTES = int(os.getenv('MAX_RECORDING_MINUTES', '5'))  # 最大録画時間（分）- デフォルトを5分に変更
+MIN_DISK_SPACE_GB = int(os.getenv('MIN_DISK_SPACE_GB', '1'))  # 最小必要ディスク容量（GB）
+
+# ストリーミング設定
+RETRY_ATTEMPTS = int(os.getenv('RETRY_ATTEMPTS', '5'))  # 再試行回数
+RETRY_DELAY = int(os.getenv('RETRY_DELAY', '15'))  # 再試行遅延（秒）
+MAX_RETRY_DELAY = int(os.getenv('MAX_RETRY_DELAY', '90'))  # 最大再試行遅延（秒）
+
+# リソース制限設定
+MAX_CONCURRENT_STREAMS = int(os.getenv('MAX_CONCURRENT_STREAMS', '10'))  # 最大同時ストリーミング数
+RESOURCE_CHECK_INTERVAL = int(os.getenv('RESOURCE_CHECK_INTERVAL', '30'))  # リソースチェック間隔（秒）
+MAX_CPU_PERCENT = int(os.getenv('MAX_CPU_PERCENT', '80'))  # 最大CPU使用率（%）
+MAX_MEM_PERCENT = int(os.getenv('MAX_MEM_PERCENT', '80'))  # 最大メモリ使用率（%）
+CLEANUP_INTERVAL = int(os.getenv('CLEANUP_INTERVAL', '300'))  # クリーンアップ間隔（秒）
+HLS_SEGMENT_MAX_AGE = int(os.getenv('HLS_SEGMENT_MAX_AGE', '600'))  # 古いセグメントファイルの最大保持時間（秒）
+
+# HLS設定
+HLS_SEGMENT_TIME = int(os.getenv('HLS_SEGMENT_TIME', '2'))  # HLSセグメント長（秒）
+HLS_LIST_SIZE = int(os.getenv('HLS_LIST_SIZE', '6'))  # HLSプレイリストサイズを適正値に調整
+
+# HLSストリーミング設定
+HLS_SEGMENT_DURATION = int(os.getenv('HLS_SEGMENT_DURATION', '2'))  # セグメント長（秒）
+HLS_PLAYLIST_SIZE = int(os.getenv('HLS_PLAYLIST_SIZE', '6'))  # プレイリストに保持するセグメント数を調整
+HLS_BUFFER_SIZE = int(os.getenv('HLS_BUFFER_SIZE', '5242880'))  # バッファサイズ（5MB）に縮小
+STREAM_RESTART_DELAY = int(os.getenv('STREAM_RESTART_DELAY', '10'))  # ストリーミング再起動の遅延（秒）
+MAX_RESTART_ATTEMPTS = int(os.getenv('MAX_RESTART_ATTEMPTS', '5'))  # 最大再起動試行回数
+
+# ネットワーク設定
+RTSP_TIMEOUT = int(os.getenv('RTSP_TIMEOUT', '20'))  # RTSP接続タイムアウト（秒）
+HEALTH_CHECK_INTERVAL = int(os.getenv('HEALTH_CHECK_INTERVAL', '15'))  # 健全性チェックの間隔（秒）
+HLS_UPDATE_TIMEOUT = int(os.getenv('HLS_UPDATE_TIMEOUT', '20'))  # HLSファイル更新タイムアウト（秒）
 
 # 実行ファイル名に基づいてログファイル名を設定
 def get_log_path():
@@ -36,39 +75,6 @@ def get_log_path():
         return os.path.join(log_dir, f'streaming_{timestamp}.log')
 
 LOG_PATH = get_log_path()
-
-# 録画設定
-MAX_RECORDING_HOURS = 1  # 最大録画時間（時間）
-MIN_DISK_SPACE_GB = 1    # 最小必要ディスク容量（GB）
-
-# ストリーミング設定
-RETRY_ATTEMPTS = 3       # 再試行回数
-RETRY_DELAY = 10         # 再試行遅延（秒）
-MAX_RETRY_DELAY = 60     # 最大再試行遅延（秒）
-
-# リソース制限設定
-MAX_CONCURRENT_STREAMS = 10     # 最大同時ストリーミング数
-RESOURCE_CHECK_INTERVAL = 30    # リソースチェック間隔（秒）
-MAX_CPU_PERCENT = 80            # 最大CPU使用率（%）
-MAX_MEM_PERCENT = 80            # 最大メモリ使用率（%）
-CLEANUP_INTERVAL = 300           # クリーンアップ間隔（秒）
-HLS_SEGMENT_MAX_AGE = 600       # 古いセグメントファイルの最大保持時間（秒）（300秒から600秒に増加）
-
-# HLS設定
-HLS_SEGMENT_TIME = 2            # HLSセグメント長（秒）
-HLS_LIST_SIZE = 5               # HLSプレイリストサイズ
-
-# HLSストリーミング設定
-HLS_SEGMENT_DURATION = 2  # セグメント長（秒）
-HLS_PLAYLIST_SIZE = 10    # プレイリストに保持するセグメント数
-HLS_BUFFER_SIZE = 5242880 # バッファサイズ（5MB）
-STREAM_RESTART_DELAY = 5  # ストリーミング再起動の遅延（秒）
-MAX_RESTART_ATTEMPTS = 3  # 最大再起動試行回数
-
-# ネットワーク設定
-RTSP_TIMEOUT = 15               # RTSP接続タイムアウト（秒）
-HEALTH_CHECK_INTERVAL = 10      # 健全性チェックの間隔（秒）
-HLS_UPDATE_TIMEOUT = 15         # HLSファイル更新タイムアウト（秒）
 
 # ロギング設定
 def setup_logging():

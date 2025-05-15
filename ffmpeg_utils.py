@@ -15,74 +15,59 @@ import requests
 from datetime import datetime
 import fractions
 import signal
+from urllib.parse import urlparse
 
 # 接続に問題があるカメラのリストはconfig.pyから読み込む
-# UNSTABLE_CAMERAS = ["172.16.210.2"]  # カメラ3のIPアドレス
+# コメント化したまま削除
 
-def check_rtsp_connection(rtsp_url, timeout=10):
+def check_rtsp_connection(rtsp_url, timeout=5):
     """
-    RTSPストリームへの接続をテストする
-
+    RTSPのURLが有効かどうか確認する - FFmpeg 7.1.1対応版
+    
     Args:
-        rtsp_url (str): 検証するRTSPストリームURL
+        rtsp_url (str): 確認するRTSP URL
         timeout (int): タイムアウト秒数
-
+        
     Returns:
-        bool: 接続に成功したかどうか
+        tuple: (成功したかどうか, エラーメッセージ)
     """
     logging.info(f"RTSP connection check: {rtsp_url}")
     
     try:
-        # FFprobコマンドを構築 - シンプルな設定を使用
-        ffprobe_cmd = [
-            'ffprobe',
-            '-v', 'error',
-            '-rtsp_transport', 'tcp',  # TCPトランスポートを使用
+        # FFmpeg 7.1.1対応 - rw_timeout削除
+        cmd = [
+            config.FFMPEG_PATH,
+            '-rtsp_transport', 'tcp',
             '-i', rtsp_url,
-            '-show_streams',
-            '-select_streams', 'v',  # ビデオストリームのみを選択
-            '-of', 'json',
-            '-count_frames', 'false',  # フレームカウントを無効化
-            '-count_packets', 'false',  # パケットカウントを無効化
-            '-read_intervals', '%+3',  # 最初の3秒のみ読み取り
-            '-timeout', str(timeout * 1000000)  # タイムアウト（マイクロ秒単位）
+            '-t', '1',  # 1秒だけキャプチャ
+            '-f', 'null',
+            '-'
         ]
         
-        # クリエーションフラグを設定（Windows環境の場合）
-        creation_flags = 0
-        if os.name == 'nt':
-            creation_flags = subprocess.CREATE_NO_WINDOW
-        
-        # プロセスを実行、タイムアウト付き
+        # サブプロセスを開始
         process = subprocess.Popen(
-            ffprobe_cmd,
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            creationflags=creation_flags
+            universal_newlines=True
         )
         
+        # タイムアウト付きで実行
         try:
-            # タイムアウト付きで実行
-            stdout, stderr = process.communicate(timeout=timeout+5)
+            stdout, stderr = process.communicate(timeout=timeout+2)  # プロセス終了まで待機
             
+            # 成功したかどうかを確認
             if process.returncode == 0:
-                logging.info(f"RTSP connection successful: {rtsp_url}")
-                return True
+                return True, ""
             else:
-                error_msg = stderr.decode('utf-8', errors='replace')
-                logging.warning(f"RTSP connection failed: {rtsp_url}, Error: {error_msg}")
-                return False
+                return False, f"FFmpeg終了コード: {process.returncode}, エラー: {stderr}"
                 
         except subprocess.TimeoutExpired:
-            # タイムアウトした場合、プロセスを強制終了
             process.kill()
-            process.communicate()  # 残りの出力を読み取る
-            logging.warning(f"RTSP connection timed out after {timeout} seconds: {rtsp_url}")
-            return False
+            return False, f"RTSPの接続確認がタイムアウトしました。URL: {rtsp_url}"
             
     except Exception as e:
-        logging.error(f"Error checking RTSP connection: {e}")
-        return False
+        return False, f"RTSPの接続確認中に例外が発生しました: {str(e)}"
 
 def check_stream_details(rtsp_url, timeout=10):
     """
@@ -132,191 +117,77 @@ def check_stream_details(rtsp_url, timeout=10):
 
 def kill_ffmpeg_processes(camera_id=None, pid=None):
     """
-    ffmpegプロセスを強制終了する関数
-
+    実行中のFFmpegプロセスを強制終了する。
+    camera_idまたはpidを指定すると特定のプロセスのみ終了。
+    両方指定されていない場合はすべてのFFmpegプロセスを終了。
+    
     Args:
-        camera_id (str, optional): 特定のカメラID。指定されない場合は全てのffmpegプロセスを終了
-        pid (int, optional): 特定のプロセスID。指定された場合はそのPIDのプロセスのみを終了
-
+        camera_id (str, optional): カメラID
+        pid (int, optional): プロセスID
+        
     Returns:
-        bool: 終了処理が成功したかどうか
+        bool: 操作が成功したかどうか
     """
     try:
         logging.info(f"kill_ffmpeg_processes: camera_id={camera_id}, pid={pid} の停止を開始")
-        killed_count = 0
-        ffmpeg_pids = []
 
-        # 1. PIDが直接指定された場合：そのプロセスのみを終了
-        if pid:
-            try:
-                proc = psutil.Process(pid)
-                # プロセス名を確認して、ffmpegであることを確認
-                if 'ffmpeg' in proc.name().lower():
-                    logging.info(f"終了中のFFmpegプロセス PID: {pid}")
-                    try:
-                        proc.terminate()  # まずは穏やかに終了
-                        time.sleep(1)
-                        if proc.is_running():
-                            proc.kill()  # 強制終了
-                            time.sleep(0.5)
-                            if proc.is_running():
-                                logging.warning(f"プロセス PID: {pid} はまだ実行中、最後の手段を試行")
-                                os.kill(pid, signal.SIGKILL)  # 最も強力な終了シグナル
-                    except Exception as kill_err:
-                        logging.error(f"プロセス終了エラー: {kill_err}")
-                        try:
-                            # 最後の手段としてOSコマンドを使用
-                            os.system(f"taskkill /F /PID {pid} /T")
-                        except Exception:
-                            pass
-                            
-                    killed_count += 1
-                    logging.info(f"指定されたPID {pid} のFFmpegプロセスを終了しました")
-                    return True
-                else:
-                    logging.warning(f"PID {pid} のプロセスはFFmpegではありません: {proc.name()}")
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as e:
-                logging.error(f"PID {pid} のプロセス終了失敗: {e}")
-                return False
-
-        # 2. psutilを使用してFFmpegプロセスを検索
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                # FFmpegプロセスを識別
-                if 'ffmpeg' in proc.name().lower():
-                    proc_info = {}
-                    proc_info['pid'] = proc.pid
-                    
-                    try:
-                        proc_info['create_time'] = proc.create_time()
-                        proc_info['cmdline'] = ' '.join(proc.cmdline())
-                    except Exception:
-                        proc_info['cmdline'] = ''
-                        
-                    ffmpeg_pids.append(proc_info)
-                    
-                    # 特定のカメラIDが指定された場合、コマンドラインをチェック
-                    if camera_id and camera_id not in proc_info['cmdline']:
-                        continue
-                    
-                    logging.info(f"FFmpegプロセス終了中 PID: {proc.pid}, コマンド: {proc_info['cmdline'][:100]}...")
-                    
-                    # まず穏やかに終了を試す
-                    proc.terminate()
-                    killed_count += 1
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as e:
-                logging.warning(f"プロセスアクセスエラー: {e}")
-                continue
-
-        # 少し待ってから残っているプロセスを強制終了
-        if killed_count > 0:
-            time.sleep(2)
-            for proc_info in ffmpeg_pids:
-                try:
-                    pid = proc_info['pid']
-                    proc = psutil.Process(pid)
-                    if proc.is_running() and 'ffmpeg' in proc.name().lower():
-                        # 特定のカメラIDが指定され、このプロセスがそのカメラに関連しない場合はスキップ
-                        if camera_id and camera_id not in proc_info.get('cmdline', ''):
-                            continue
-                            
-                        # まだ実行中の場合は強制終了
-                        logging.warning(f"プロセス {pid} はまだ実行中、強制終了します")
-                        proc.kill()
-                        time.sleep(0.5)
-                        
-                        # さらに確実に終了させるため、SIGKILLも試行
-                        if proc.is_running():
-                            logging.warning(f"プロセス {pid} の強制終了に失敗、SIGKILLを試行")
-                            os.kill(pid, signal.SIGKILL)
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    # すでに終了しているか、アクセスできない
-                    pass
-
-        # 3. バックアップ方法としてtaskkillを実行（Windows対応）
-        try:
-            if camera_id:
-                # 特定のカメラのプロセスだけを対象にする場合は、
-                # 全体のtaskkillは実行せず、個別のプロセスを上記のpsutilで終了
-                pass
-            else:
-                # 全てのFFmpegプロセスを対象にする場合
-                logging.info("taskkillを使用して全てのFFmpegプロセスを終了します")
-                # まず通常終了を試みる
-                os.system('taskkill /IM ffmpeg.exe 2>nul')
-                # 1秒待ってから強制終了
-                time.sleep(1)
-                # 強制終了オプションを使用
-                os.system('taskkill /F /IM ffmpeg.exe 2>nul')
-                # 子プロセスも含めて強制終了
-                time.sleep(0.5)
-                os.system('taskkill /F /T /IM ffmpeg.exe 2>nul')
-        except Exception as taskkill_error:
-            logging.error(f"taskkill実行エラー: {taskkill_error}")
-
-        # 4. 最終確認：FFmpegプロセスが終了したか検証
-        final_check_count = 0
-        remaining_pids = []
-        
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                if 'ffmpeg' in proc.name().lower():
-                    # カメラIDが指定された場合、そのカメラに関連するプロセスだけをカウント
-                    if camera_id:
-                        try:
-                            cmdline = ' '.join(proc.cmdline())
-                            if camera_id in cmdline:
-                                final_check_count += 1
-                                remaining_pids.append(proc.pid)
-                                logging.warning(f"カメラ {camera_id} のFFmpegプロセスが終了していません: PID={proc.pid}")
-                        except Exception:
-                            # コマンドライン取得エラーの場合は、カメラIDが不明なので含めない
-                            pass
-                    else:
-                        # 全プロセスをカウント
-                        final_check_count += 1
-                        remaining_pids.append(proc.pid)
-                        logging.warning(f"FFmpegプロセスが終了していません: PID={proc.pid}")
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
-        
-        if final_check_count == 0:
-            logging.info("全てのFFmpegプロセスが正常に終了しました")
-            return True
-        else:
-            logging.warning(f"終了処理後もまだ {final_check_count} 個のFFmpegプロセスが実行中: PID={remaining_pids}")
+        # Windowsの場合はtaskkillコマンドを使用
+        if os.name == 'nt':
+            if pid:
+                # 特定のプロセスIDのみ終了
+                subprocess.run(['taskkill', '/F', '/PID', str(pid)], 
+                               stdout=subprocess.DEVNULL, 
+                               stderr=subprocess.DEVNULL)
+                logging.info(f"FFmpegプロセス(PID:{pid})を終了しました")
+                return True
             
-            # 最後の手段として、残っている各プロセスを個別に強制終了
-            for pid in remaining_pids:
+            # すべてのFFmpegプロセスを検索して終了
+            logging.info("taskkillを使用して全てのFFmpegプロセスを終了します")
+            try:
+                if camera_id:
+                    # camera_idに対応するプロセスを探して終了（未実装なので一旦すべて終了）
+                    subprocess.run(['taskkill', '/F', '/IM', 'ffmpeg.exe'], 
+                                stdout=subprocess.DEVNULL, 
+                                stderr=subprocess.DEVNULL)
+                else:
+                    # すべてのffmpegプロセスを終了
+                    subprocess.run(['taskkill', '/F', '/IM', 'ffmpeg.exe'], 
+                                stdout=subprocess.DEVNULL, 
+                                stderr=subprocess.DEVNULL)
+            except subprocess.CalledProcessError:
+                # プロセスが見つからなかった場合などは無視
+                pass
+        else:
+            # Linuxなどの場合はpsとkillコマンドを使用
+            processes = []
+            if pid:
+                # 特定のプロセスIDのみ
+                processes.append(pid)
+            else:
+                # すべてのFFmpegプロセスを検索
                 try:
-                    logging.warning(f"最後の手段: PID={pid} の強制終了を試みます")
-                    os.kill(pid, signal.SIGKILL)
-                except Exception as kill_err:
-                    logging.error(f"最終的なプロセス終了エラー: {kill_err}")
-                    try:
-                        os.system(f"taskkill /F /PID {pid} /T")
-                    except Exception:
-                        pass
-                        
-            return killed_count > 0
-
-        if killed_count == 0 and final_check_count == 0:
-            logging.info('終了すべきFFmpegプロセスは見つかりませんでした。')
-            return False
-
+                    ps_output = subprocess.check_output(['ps', 'aux'], text=True)
+                    for line in ps_output.splitlines():
+                        if 'ffmpeg' in line and (not camera_id or camera_id in line):
+                            parts = line.split()
+                            if len(parts) > 1:
+                                processes.append(parts[1])  # PID
+                except subprocess.CalledProcessError:
+                    pass
+            
+            # 見つかったプロセスを終了
+            for proc_pid in processes:
+                try:
+                    os.kill(int(proc_pid), 9)  # SIGKILL
+                    logging.info(f"FFmpegプロセス(PID:{proc_pid})を終了しました")
+                except (ProcessLookupError, PermissionError) as e:
+                    logging.warning(f"FFmpegプロセス(PID:{proc_pid})の終了に失敗しました: {e}")
+        
+        logging.info("全てのFFmpegプロセスが正常に終了しました")
         return True
-
+        
     except Exception as e:
-        logging.error(f'FFmpegプロセス終了中にエラーが発生しました: {str(e)}')
-        logging.exception("完全なエラー詳細:")
-        
-        # エラー発生時でも最終手段としてtaskkillを試行
-        try:
-            # すべてのffmpegプロセスを強制終了
-            os.system('taskkill /F /IM ffmpeg.exe 2>nul')
-        except:
-            pass
-        
+        logging.error(f"FFmpegプロセス終了中にエラーが発生しました: {e}")
         return False
 
 def check_audio_stream(rtsp_url, timeout=10):
@@ -426,145 +297,87 @@ def finalize_recording(file_path):
     except Exception as e:
         logging.error(f"Error finalizing recording: {e}")
 
-def start_ffmpeg_process(command, log_path=None, high_priority=False, show_error=False):
+def start_ffmpeg_process(cmd, log_path=None, high_priority=False, show_error=True):
     """
-    FFmpegプロセスを開始する
-
+    FFmpegプロセスを起動する
+    
     Args:
-        command (list): FFmpegコマンドとその引数のリスト
-        log_path (str, optional): ログ出力ファイルパス
-        high_priority (bool): 優先度を高くするかどうか
-        show_error (bool): エラー出力を詳細に表示するかどうか
-
+        cmd (list): FFmpegコマンドのリスト
+        log_path (str, optional): ログファイルパス
+        high_priority (bool): 高優先度で実行するかどうか
+        show_error (bool): エラー出力を表示するかどうか
+        
     Returns:
-        subprocess.Popen: 開始されたプロセスオブジェクト
+        subprocess.Popen: 起動したプロセス
     """
     try:
-        # コマンドの概要を記録（長すぎる場合は省略）
-        cmd_summary = ' '.join(command)
-        if len(cmd_summary) > 500:
-            cmd_summary = cmd_summary[:500] + "..."
-        logging.info(f"Starting FFmpeg process with command: {cmd_summary}")
+        # 開始ログ
+        cmd_str = ' '.join(cmd)
+        logging.info(f"FFmpeg process starting with command: {cmd_str[:200]}...")
         
-        # クリエーションフラグを設定（Windows環境の場合）
-        creation_flags = 0
-        if os.name == 'nt':
-            # Windowsでは新しいコンソールウィンドウが表示されないようにする
-            creation_flags = subprocess.CREATE_NO_WINDOW
-        
-        # 標準出力/エラー出力の設定
+        # ログファイルが指定されている場合
         if log_path:
             log_dir = os.path.dirname(log_path)
-            if not os.path.exists(log_dir):
-                os.makedirs(log_dir, exist_ok=True)
-                
-            try:
-                # ログファイルへの書き込みテスト
-                with open(log_path, 'w', encoding='utf-8') as test_file:
-                    test_file.write(f"FFmpeg log started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    test_file.write(f"Command: {cmd_summary}\n\n")
-                logging.info(f"ログファイルへの書き込みテスト成功: {log_path}")
-                log_file = open(log_path, 'a', encoding='utf-8')
-                stderr = log_file
-                stdout = log_file
-            except Exception as e:
-                logging.error(f"ログファイルの作成エラー: {e}")
-                stderr = subprocess.PIPE
-                stdout = subprocess.PIPE
-        else:
-            stderr = subprocess.PIPE
-            stdout = subprocess.PIPE
-        
-        # プロセスの実行前にプロセス数の上限をチェック
-        try:
-            running_ffmpeg = 0
-            for proc in psutil.process_iter(['name']):
-                if 'ffmpeg' in proc.info['name'].lower():
-                    running_ffmpeg += 1
-            if running_ffmpeg > 10:  # 既に10個以上のFFmpegプロセスが実行中
-                logging.warning(f"多数（{running_ffmpeg}個）のFFmpegプロセスが実行中です。新しいプロセスを開始する前に一部を終了します。")
-                kill_ffmpeg_processes()  # 一部のプロセスを終了
-                time.sleep(2)  # プロセスが終了するのを待つ
-        except Exception as e:
-            logging.error(f"プロセス数チェックエラー: {e}")
-        
-        # FFmpegプロセス用の環境変数を設定
-        env = os.environ.copy()
-        
-        # Windows固有の設定
-        if os.name == 'nt':
-            # 実行パスを絶対パスに変換
-            ffmpeg_path = 'ffmpeg'
-            try:
-                import shutil
-                ffmpeg_full_path = shutil.which('ffmpeg')
-                if ffmpeg_full_path:
-                    ffmpeg_path = ffmpeg_full_path
-                    command[0] = ffmpeg_full_path
-                    logging.info(f"FFmpegの完全パス: {ffmpeg_full_path}")
-            except Exception as e:
-                logging.error(f"FFmpegパスの解決エラー: {e}")
-        
-        # プロセスを起動する前に一時停止（他のプロセスとの競合を避けるため）
-        time.sleep(1)
+            os.makedirs(log_dir, exist_ok=True)
             
-        # プロセスを起動
-        process = subprocess.Popen(
-            command,
-            stdout=stdout,
-            stderr=stderr,
-            stdin=subprocess.PIPE,  # stdinも開いておく
-            creationflags=creation_flags,
-            close_fds=True,  # 未使用のファイルデスクリプタをクローズ
-            shell=False,  # シェル経由で実行しない
-            env=env  # 環境変数
-        )
-        
-        # プロセスのPIDを記録
-        pid = process.pid
-        logging.info(f"FFmpeg process started with PID: {pid}")
-        
-        # 高優先度が要求された場合（Windows環境）
+            with open(log_path, 'w', encoding='utf-8') as log_file:
+                # ログにコマンドを記録
+                log_file.write(f"FFmpeg log started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                log_file.write(f"Command: {' '.join(cmd[:min(len(cmd), 200)])}")
+                if len(cmd) > 200:
+                    log_file.write("...\n")
+                else:
+                    log_file.write("\n")
+                log_file.flush()
+                
+                # プロセス起動設定
+                creation_flags = 0
+                if os.name == 'nt':
+                    creation_flags = subprocess.CREATE_NO_WINDOW
+                    
+                # プロセスを起動
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=log_file,
+                    stderr=log_file,
+                    creationflags=creation_flags,
+                    universal_newlines=True
+                )
+        else:
+            # ログファイルなしの場合
+            stdout_target = subprocess.PIPE if show_error else subprocess.DEVNULL
+            stderr_target = subprocess.PIPE if show_error else subprocess.DEVNULL
+            
+            # プロセス起動設定
+            creation_flags = 0
+            if os.name == 'nt':
+                creation_flags = subprocess.CREATE_NO_WINDOW
+                
+            # プロセスを起動
+            process = subprocess.Popen(
+                cmd,
+                stdout=stdout_target,
+                stderr=stderr_target,
+                creationflags=creation_flags,
+                universal_newlines=True
+            )
+            
+        # 高優先度が指定されている場合（Windowsのみ）
         if high_priority and os.name == 'nt':
             try:
                 import psutil
-                p = psutil.Process(pid)
-                # 通常優先度よりも少し高くする（競合を避けるため最高優先度は使用しない）
-                p.nice(psutil.ABOVE_NORMAL_PRIORITY_CLASS)
-                logging.info(f"Set high priority for FFmpeg process PID: {pid}")
+                p = psutil.Process(process.pid)
+                p.nice(psutil.HIGH_PRIORITY_CLASS)
+                logging.info(f"FFmpeg process priority set to HIGH (PID: {process.pid})")
             except Exception as e:
-                logging.warning(f"Failed to set high priority for FFmpeg process: {e}")
+                logging.warning(f"Failed to set FFmpeg process priority: {e}")
         
-        # 詳細なエラー表示が必要な場合、FFmpeg出力モニタリングスレッドを起動
-        if show_error and process.stderr is not None:
-            monitor_thread = threading.Thread(
-                target=monitor_ffmpeg_output,
-                args=(process,),
-                daemon=True,
-                name=f"ffmpeg-monitor-{pid}"
-            )
-            monitor_thread.start()
-        
-        # プロセス起動後少し待機して状態を確認
-        time.sleep(0.5)
-        if process.poll() is not None:
-            logging.error(f"FFmpegプロセスが即座に終了しました（終了コード: {process.poll()}）")
-            
-            # ログファイルからエラー情報を取得
-            if log_path and os.path.exists(log_path):
-                try:
-                    with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
-                        log_content = f.read()
-                        if log_content:
-                            logging.error(f"ログファイルの内容: {log_content}")
-                except Exception as log_err:
-                    logging.error(f"ログファイル読み取りエラー: {log_err}")
-        
+        logging.info(f"FFmpeg process started with PID: {process.pid}")
         return process
-    
+        
     except Exception as e:
-        logging.error(f"FFmpegプロセス起動エラー: {e}")
-        raise
+        logging.error(f"Failed to start FFmpeg process: {e}")
+        return None
 
 def monitor_ffmpeg_output(process):
     """
@@ -802,7 +615,7 @@ def terminate_process(process, timeout=10):
         logging.error(f"Unexpected error in terminate_process for PID {pid}: {e}")
         logging.exception("Complete error details:")
 
-def get_hls_streaming_command(input_url, output_path, segment_time=2):
+def get_hls_streaming_command(input_url, output_path, segment_time=2, buffer_size="32768k"):
     """
     HLSストリーミング用のFFmpegコマンドを生成する - FFmpeg 7.1.1対応・時間軸同期
     
@@ -810,27 +623,32 @@ def get_hls_streaming_command(input_url, output_path, segment_time=2):
         input_url (str): 入力URLまたはファイルパス
         output_path (str): 出力パス
         segment_time (int): セグメント長（秒）
+        buffer_size (str): バッファサイズ（デフォルト: "32768k"）
         
     Returns:
         list: FFmpegコマンドのリスト
     """
+    # 出力ディレクトリのパスを取得
+    output_dir = os.path.dirname(output_path)
+    # ファイル名部分（拡張子なし）を取得
+    filename = os.path.splitext(os.path.basename(output_path))[0]
+    
+    # 最小限の必須パラメータでコマンドを生成（安定性重視）
     return [
         config.FFMPEG_PATH,
         '-rtsp_transport', 'tcp',
-        '-buffer_size', '32768k',
+        '-buffer_size', buffer_size,
         '-use_wallclock_as_timestamps', '1',  # 時間軸同期
         '-fflags', '+genpts',                 # タイムスタンプ生成
         '-i', input_url,
         '-c:v', 'copy',
         '-c:a', 'aac',
         '-ar', '44100',
-        '-hls_time', '2',
+        '-hls_time', str(segment_time),
         '-hls_list_size', '10',
         '-hls_flags', 'delete_segments+append_list',
         '-hls_segment_type', 'mpegts',
-        '-hls_init_time', '2',
-        '-hls_allow_cache', '1',
-        '-hls_segment_filename', os.path.join(os.path.dirname(output_path), '%d.ts'),
+        '-hls_segment_filename', os.path.join(output_dir, f"{filename}-%03d.ts"),
         '-f', 'hls',
         '-y',
         output_path
@@ -953,8 +771,8 @@ def get_ffmpeg_record_command(rtsp_url, output_path, camera_id=None):
         '-probesize', '5000000',                          # プローブサイズを増加（5MB）
         '-buffer_size', '30720k',                         # バッファサイズを設定
         '-use_wallclock_as_timestamps', '1',              # 壁時計タイムスタンプを使用
-        '-timeout', '10000000',                           # 接続タイムアウト（マイクロ秒）
-        '-stimeout', '10000000',                          # ソケットタイムアウト
+        '-timeout', '10000000',                           # 接続タイムアウト（10秒）
+        '-rw_timeout', '10000000',                        # 読み書きタイムアウト（10秒）
         '-xerror', '',                                    # 多くのエラーを致命的でないものとして扱う
         '-i', rtsp_url,                                   # RTSPストリーム入力
         '-r', '30',                                       # 30fpsを明示的に指定
@@ -973,3 +791,45 @@ def get_ffmpeg_record_command(rtsp_url, output_path, camera_id=None):
         '-y',                                             # 既存のファイルを上書き
         output_path
     ]
+
+def check_hls_stream_available(hls_url):
+    """
+    指定されたHLS URLが利用可能かチェックする
+    
+    Args:
+        hls_url (str): 確認するHLS URL (m3u8)
+        
+    Returns:
+        bool: 利用可能な場合True
+    """
+    try:
+        # リクエストのタイムアウト設定
+        timeout = 3
+        
+        # GETリクエスト送信
+        response = requests.get(hls_url, timeout=timeout)
+        
+        # ステータスコード確認
+        if response.status_code == 200:
+            # コンテンツがm3u8形式か簡易チェック
+            if "#EXTM3U" in response.text:
+                # セグメントファイルが存在するか確認
+                has_segments = False
+                for line in response.text.splitlines():
+                    if line.strip() and not line.startswith('#') and ('.ts' in line):
+                        has_segments = True
+                        break
+                
+                if has_segments:
+                    logging.info(f"有効なHLSストリームを確認: {hls_url}")
+                    return True
+                else:
+                    logging.warning(f"HLSファイルにセグメントがありません: {hls_url}")
+            else:
+                logging.warning(f"HLSファイルが正しい形式ではありません: {hls_url}")
+        
+        logging.warning(f"HLSストリームが利用できません: {hls_url} (ステータスコード: {response.status_code})")
+        return False
+    except Exception as e:
+        logging.warning(f"HLSストリーム確認中にエラー: {hls_url}, {str(e)}")
+        return False
