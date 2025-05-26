@@ -31,7 +31,7 @@ FFMPEG_BUFFER_SIZE = os.getenv('FFMPEG_BUFFER_SIZE', '32768k')  # FFmpegのバ�
 FFMPEG_THREAD_QUEUE_SIZE = int(os.getenv('FFMPEG_THREAD_QUEUE_SIZE', '1024'))  # FFmpegのスレッドキューサイズを調整
 
 # 録画設定
-MAX_RECORDING_MINUTES = int(os.getenv('MAX_RECORDING_MINUTES', '5'))  # 最大録画時間（分）- デフォルトを5分に変更
+MAX_RECORDING_MINUTES = int(os.getenv('MAX_RECORDING_MINUTES', '60'))  # 最大録画時間（分）- デフォルトを60分に変更
 MIN_DISK_SPACE_GB = int(os.getenv('MIN_DISK_SPACE_GB', '1'))  # 最小必要ディスク容量（GB）
 
 # ストリーミング設定
@@ -47,13 +47,9 @@ MAX_MEM_PERCENT = int(os.getenv('MAX_MEM_PERCENT', '80'))  # 最大メモリ使�
 CLEANUP_INTERVAL = int(os.getenv('CLEANUP_INTERVAL', '300'))  # クリーンアップ間隔（秒）
 HLS_SEGMENT_MAX_AGE = int(os.getenv('HLS_SEGMENT_MAX_AGE', '600'))  # 古いセグメントファイルの最大保持時間（秒）
 
-# HLS設定
-HLS_SEGMENT_TIME = int(os.getenv('HLS_SEGMENT_TIME', '2'))  # HLSセグメント長（秒）
-HLS_LIST_SIZE = int(os.getenv('HLS_LIST_SIZE', '6'))  # HLSプレイリストサイズを適正値に調整
-
 # HLSストリーミング設定
-HLS_SEGMENT_DURATION = int(os.getenv('HLS_SEGMENT_DURATION', '2'))  # セグメント長（秒）
-HLS_PLAYLIST_SIZE = int(os.getenv('HLS_PLAYLIST_SIZE', '6'))  # プレイリストに保持するセグメント数を調整
+HLS_SEGMENT_DURATION = int(os.getenv('HLS_SEGMENT_DURATION', '1'))  # セグメント長（秒）
+HLS_PLAYLIST_SIZE = int(os.getenv('HLS_PLAYLIST_SIZE', '12'))  # プレイリストに保持するセグメント数を調整
 HLS_BUFFER_SIZE = int(os.getenv('HLS_BUFFER_SIZE', '5242880'))  # バッファサイズ（5MB）に縮小
 STREAM_RESTART_DELAY = int(os.getenv('STREAM_RESTART_DELAY', '10'))  # ストリーミング再起動の遅延（秒）
 MAX_RESTART_ATTEMPTS = int(os.getenv('MAX_RESTART_ATTEMPTS', '5'))  # 最大再起動試行回数

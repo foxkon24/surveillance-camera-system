@@ -615,7 +615,7 @@ def terminate_process(process, timeout=10):
         logging.error(f"Unexpected error in terminate_process for PID {pid}: {e}")
         logging.exception("Complete error details:")
 
-def get_hls_streaming_command(input_url, output_path, segment_time=2, buffer_size="32768k"):
+def get_hls_streaming_command(input_url, output_path, segment_time=1, buffer_size="32768k"):
     """
     HLSストリーミング用のFFmpegコマンドを生成する - FFmpeg 7.1.1対応・時間軸同期
     
@@ -638,17 +638,39 @@ def get_hls_streaming_command(input_url, output_path, segment_time=2, buffer_siz
         config.FFMPEG_PATH,
         '-rtsp_transport', 'tcp',
         '-buffer_size', buffer_size,
-        '-use_wallclock_as_timestamps', '1',  # 時間軸同期
-        '-fflags', '+genpts',                 # タイムスタンプ生成
+        '-max_delay', '100000',  # 最大遅延を大幅短縮（0.1秒）
+        '-analyzeduration', '1000000',  # 分析時間を短縮（1秒）
+        '-probesize', '1000000',  # プローブサイズを小さく（1MB）
+        '-fflags', '+genpts+discardcorrupt+igndts+ignidx+flush_packets',  # パケットフラッシュを追加
+        '-err_detect', 'ignore_err',  # エラー検出を緩和
+        '-avoid_negative_ts', 'make_zero',  # 負のタイムスタンプを修正
+        '-use_wallclock_as_timestamps', '1',  # 壁時計タイムスタンプを使用
+        '-thread_queue_size', '512',  # スレッドキューサイズを増加
         '-i', input_url,
         '-c:v', 'copy',
         '-c:a', 'aac',
         '-ar', '44100',
-        '-hls_time', str(segment_time),
-        '-hls_list_size', '10',
-        '-hls_flags', 'delete_segments+append_list',
+        '-ac', '1',  # モノラル音声（遅延軽減）
+        '-b:a', '64k',  # 音声ビットレートを下げて遅延軽減
+        '-async', '1',  # 音声同期を強制
+        '-vsync', 'cfr',  # 一定フレームレートを強制
+        '-fps_mode', 'cfr',  # フレームレートモードを一定に
+        '-force_key_frames', f'expr:gte(t,n_forced*{segment_time})',  # キーフレームを強制
+        '-sc_threshold', '0',  # シーン変更検出を無効化
+        '-g', str(segment_time * 30),  # GOP長を短く調整（30fps想定）
+        '-movflags', 'empty_moov+omit_tfhd_offset+frag_keyframe+default_base_moof',  # HLSストリーミング最適化
+        '-hls_time', str(segment_time),  # セグメント時間を1秒に短縮
+        '-hls_list_size', str(config.HLS_PLAYLIST_SIZE),  # プレイリストサイズを12セグメントに増加（長時間運用対応）
+        '-hls_flags', 'append_list+discont_start+split_by_time+independent_segments',
         '-hls_segment_type', 'mpegts',
-        '-hls_segment_filename', os.path.join(output_dir, f"{filename}-%03d.ts"),
+        '-hls_segment_filename', os.path.join(output_dir, f"{filename}-%05d.ts"),
+        '-hls_start_number_source', 'datetime',  # セグメント番号を日時ベースに
+        '-hls_allow_cache', '0',  # キャッシュを無効化してリアルタイム性向上
+        '-muxdelay', '0',  # マルチプレクサ遅延を無効化
+        '-muxpreload', '0',  # プリロードを無効化
+        '-max_muxing_queue_size', '4096',  # キューサイズを適度に設定
+        '-tune', 'zerolatency',  # ゼロ遅延チューニング（可能な場合）
+        '-preset', 'ultrafast',  # 超高速プリセット（エンコードする場合）
         '-f', 'hls',
         '-y',
         output_path

@@ -7,12 +7,14 @@ import os
 import logging
 import sys
 import time
+from datetime import datetime
 
 import config
 import fs_utils
 import camera_utils
 import recording
 import ffmpeg_utils
+import streaming
 
 app = Flask(__name__)
 
@@ -403,6 +405,128 @@ def test_backup():
         logging.error(f"テストエンドポイントエラー: {e}")
         return f"エラー: {str(e)}", 500
 
+@app.route('/system/cam/status')
+def get_system_status():
+    """システムステータスを返すAPI"""
+    try:
+        # リソース状況を取得
+        import psutil
+        cpu_percent = psutil.cpu_percent()
+        memory_percent = psutil.virtual_memory().percent
+        
+        # ディスク空き容量を取得
+        disk_info = {}
+        for path in [config.RECORD_PATH, config.BACKUP_PATH]:
+            try:
+                total, used, free = psutil.disk_usage(path)
+                disk_info[path] = {
+                    "total": total,
+                    "used": used,
+                    "free": free,
+                    "percent": (used / total) * 100
+                }
+            except:
+                disk_info[path] = {"error": "Unable to retrieve disk info"}
+        
+        # ストリーミング状況を取得
+        streaming_status = {
+            "active_count": streaming.active_streams_count,
+            "processes": len(streaming.streaming_processes),
+            "resources": streaming.system_resources
+        }
+        
+        # 録画状況を取得
+        recording_status = {
+            "active_processes": len(recording.recording_processes),
+            "start_times": {k: v.isoformat() if hasattr(v, 'isoformat') else str(v) 
+                           for k, v in recording.recording_start_times.items()}
+        }
+        
+        return jsonify({
+            "timestamp": datetime.now().isoformat(),
+            "system": {
+                "cpu_percent": cpu_percent,
+                "memory_percent": memory_percent
+            },
+            "disk": disk_info,
+            "streaming": streaming_status,
+            "recording": recording_status
+        })
+        
+    except Exception as e:
+        logging.error(f"Error getting system status: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/system/cam/check_disk_space')
+def check_disk_space():
+    """ディスク空き容量を返すAPI"""
+    try:
+        # 録画ディレクトリの空き容量をチェック
+        record_free = fs_utils.get_free_space(config.RECORD_PATH)
+        record_free_gb = record_free / (1024 * 1024 * 1024)
+        
+        # バックアップディレクトリの空き容量をチェック
+        backup_free = fs_utils.get_free_space(config.BACKUP_PATH)
+        backup_free_gb = backup_free / (1024 * 1024 * 1024)
+        
+        return jsonify({
+            "record_path": config.RECORD_PATH,
+            "record_free_bytes": record_free,
+            "record_free_gb": round(record_free_gb, 2),
+            "backup_path": config.BACKUP_PATH,
+            "backup_free_bytes": backup_free,
+            "backup_free_gb": round(backup_free_gb, 2),
+            "free_space": f"録画: {round(record_free_gb, 2)} GB, バックアップ: {round(backup_free_gb, 2)} GB"
+        })
+        
+    except Exception as e:
+        logging.error(f"Error checking disk space: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/system/cam/cleanup_old_recordings', methods=['POST'])
+def cleanup_old_recordings():
+    """古い録画ファイルを削除するAPI"""
+    try:
+        # 録画ディレクトリ内の古いファイルを削除
+        total_deleted = 0
+        camera_dirs = os.listdir(config.RECORD_PATH)
+        for camera_id in camera_dirs:
+            camera_dir = os.path.join(config.RECORD_PATH, camera_id)
+            if os.path.isdir(camera_dir):
+                deleted = fs_utils.cleanup_directory(
+                    camera_dir, 
+                    file_pattern='.mp4', 
+                    max_age_seconds=config.MAX_RECORDING_HOURS * 3600 * 24,  # 日数を時間に変換
+                    max_files=100  # 最大ファイル数
+                )
+                if deleted:
+                    total_deleted += deleted
+        
+        # バックアップディレクトリ内の古いファイルも削除
+        if os.path.exists(config.BACKUP_PATH):
+            backup_dirs = os.listdir(config.BACKUP_PATH)
+            for camera_id in backup_dirs:
+                backup_dir = os.path.join(config.BACKUP_PATH, camera_id)
+                if os.path.isdir(backup_dir):
+                    deleted = fs_utils.cleanup_directory(
+                        backup_dir, 
+                        file_pattern='.mp4', 
+                        max_age_seconds=config.MAX_RECORDING_HOURS * 3600 * 7,  # バックアップはより長く保持（7倍）
+                        max_files=50  # バックアップの最大ファイル数
+                    )
+                    if deleted:
+                        total_deleted += deleted
+        
+        return jsonify({
+            "status": "success",
+            "files_deleted": total_deleted,
+            "message": f"{total_deleted}件の古い録画ファイルを削除しました"
+        })
+        
+    except Exception as e:
+        logging.error(f"Error cleaning up old recordings: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/system/cam/test_record')
 def test_record():
     """録画一覧のテスト（単純なテキスト返却）"""
@@ -450,7 +574,9 @@ if __name__ == '__main__':
         print(f"Base path: {config.BASE_PATH}")
         print(f"Config file path: {config.CONFIG_PATH}")
         print(f"Config file exists: {os.path.exists(config.CONFIG_PATH)}")
-        app.run(host='0.0.0.0', port=5100, debug=True)
+        import logging
+        logging.getLogger('werkzeug').setLevel(logging.ERROR)
+        app.run(host='0.0.0.0', port=5100, debug=False)
     except Exception as e:
         logging.error(f"Startup error: {e}")
         print(f"Error: {e}")
