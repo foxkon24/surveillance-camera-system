@@ -646,12 +646,10 @@ def get_hls_streaming_command(input_url, output_path, segment_time=1, buffer_siz
         '-avoid_negative_ts', 'make_zero',  # 負のタイムスタンプを修正
         '-use_wallclock_as_timestamps', '1',  # 壁時計タイムスタンプを使用
         '-thread_queue_size', '512',  # スレッドキューサイズを増加
+        '-flags', '+global_header',  # グローバルヘッダーを有効化
         '-i', input_url,
         '-c:v', 'copy',
-        '-c:a', 'aac',
-        '-ar', '44100',
-        '-ac', '1',  # モノラル音声（遅延軽減）
-        '-b:a', '64k',  # 音声ビットレートを下げて遅延軽減
+        '-c:a', 'copy',
         '-async', '1',  # 音声同期を強制
         '-vsync', 'cfr',  # 一定フレームレートを強制
         '-fps_mode', 'cfr',  # フレームレートモードを一定に
@@ -661,11 +659,12 @@ def get_hls_streaming_command(input_url, output_path, segment_time=1, buffer_siz
         '-movflags', 'empty_moov+omit_tfhd_offset+frag_keyframe+default_base_moof',  # HLSストリーミング最適化
         '-hls_time', str(segment_time),  # セグメント時間を1秒に短縮
         '-hls_list_size', str(config.HLS_PLAYLIST_SIZE),  # プレイリストサイズを12セグメントに増加（長時間運用対応）
-        '-hls_flags', 'append_list+discont_start+split_by_time+independent_segments',
+        '-hls_flags', 'delete_segments+independent_segments+split_by_time',
         '-hls_segment_type', 'mpegts',
         '-hls_segment_filename', os.path.join(output_dir, f"{filename}-%05d.ts"),
         '-hls_start_number_source', 'datetime',  # セグメント番号を日時ベースに
         '-hls_allow_cache', '0',  # キャッシュを無効化してリアルタイム性向上
+        '-start_number', '1',  # セグメント番号を1から開始
         '-muxdelay', '0',  # マルチプレクサ遅延を無効化
         '-muxpreload', '0',  # プリロードを無効化
         '-max_muxing_queue_size', '4096',  # キューサイズを適度に設定
