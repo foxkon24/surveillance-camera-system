@@ -133,7 +133,16 @@ function fetchCameraList() {
         });
 }
 
+function setRecordingButtonsEnabled(startEnabled, stopEnabled) {
+    const startBtn = document.getElementById('start-all-recordings-btn');
+    const stopBtn = document.getElementById('stop-all-recordings-btn');
+    if (startBtn) startBtn.disabled = !startEnabled;
+    if (stopBtn) stopBtn.disabled = !stopEnabled;
+}
+
 function startAllRecordings() {
+    showStatusMessage('録画開始中...');
+    setRecordingButtonsEnabled(false, false); // 開始中は両方無効化
     fetch('/start_all_recordings', {
         method: 'POST',
         headers: {
@@ -142,18 +151,23 @@ function startAllRecordings() {
     })
     .then(response => response.json())
     .then(data => {
+        showStatusMessage('');
+        setRecordingButtonsEnabled(true, true); // 完了後有効化
         alert(data.status);
-        // ページをリロードする代わりにデータを再取得して表示を更新
         fetchSystemStatus();
         fetchCameraList();
     })
     .catch(error => {
+        showStatusMessage('');
+        setRecordingButtonsEnabled(true, true);
         console.error('Error:', error);
         alert('エラーが発生しました');
     });
 }
 
 function stopAllRecordings() {
+    showStatusMessage('録画停止中...');
+    setRecordingButtonsEnabled(false, false); // 停止中は両方無効化
     fetch('/stop_all_recordings', {
         method: 'POST',
         headers: {
@@ -162,12 +176,15 @@ function stopAllRecordings() {
     })
     .then(response => response.json())
     .then(data => {
+        showStatusMessage('');
+        setRecordingButtonsEnabled(true, true); // 完了後有効化
         alert(data.status);
-        // ページをリロードする代わりにデータを再取得して表示を更新
         fetchSystemStatus();
         fetchCameraList();
     })
     .catch(error => {
+        showStatusMessage('');
+        setRecordingButtonsEnabled(true, true);
         console.error('Error:', error);
         alert('エラーが発生しました');
     });
