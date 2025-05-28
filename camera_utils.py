@@ -66,8 +66,7 @@ def read_config():
 def reload_config():
     """
     設定ファイルを強制的に再読み込みする
-    キャッシュをクリアして最新の設定を読み込む
-    
+    キャッシュをクリアして最新のcam_config.txtを必ず読み込む
     Returns:
         list: 最新のカメラ情報リスト
     """

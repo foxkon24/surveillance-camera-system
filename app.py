@@ -84,12 +84,17 @@ def serve_backup_file(camera_id, filename):
 @app.route('/system/cam/')
 def index():
     """メインページ"""
-    cameras = camera_utils.read_config()
+    cameras = camera_utils.reload_config()
     
     # ストリームが開始されているか確認し、開始されていなければ開始する
     for camera in cameras:
         if camera['id'] not in streaming.streaming_processes:
             streaming.get_or_start_streaming(camera)
+
+    # enabledフラグがなければ追加
+    for camera in cameras:
+        if 'enabled' not in camera:
+            camera['enabled'] = 1
 
     # キャッシュバスターとしてのタイムスタンプを追加
     timestamp = int(time.time())
@@ -103,7 +108,7 @@ def index_single():
     if not camera_id:
         return 'Camera ID not specified', 400
 
-    cameras = camera_utils.read_config()
+    cameras = camera_utils.reload_config()
 
     target_camera = next((camera for camera in cameras if camera['id'] == camera_id), None)
     if target_camera is None:
@@ -126,7 +131,7 @@ def restart_stream(camera_id):
         logging.info(f"カメラID {camera_id} のストリーム再起動APIが呼び出されました")
         
         # 存在する有効なカメラIDかチェック
-        cameras = camera_utils.read_config()
+        cameras = camera_utils.reload_config()
         valid_camera = None
         for camera in cameras:
             if camera['id'] == camera_id:
@@ -159,7 +164,7 @@ def restart_stream(camera_id):
 def restart_all_streams():
     """全カメラのストリームを再起動するAPI"""
     try:
-        cameras = camera_utils.read_config()
+        cameras = camera_utils.reload_config()
         success_count = 0
         failure_count = 0
         

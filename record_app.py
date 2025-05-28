@@ -56,7 +56,7 @@ def admin_data():
         # カメラ情報取得
         cameras_data = []
         try:
-            cameras = camera_utils.read_config()
+            cameras = camera_utils.reload_config()
             if cameras:
                 for camera in cameras:
                     cam_id = camera.get('id', 'unknown')
@@ -64,7 +64,8 @@ def admin_data():
                         'id': cam_id,
                         'name': camera.get('name', '不明'),
                         'rtsp_url': camera.get('rtsp_url', '不明'),
-                        'status': recording.get_recording_status(cam_id)
+                        'status': recording.get_recording_status(cam_id),
+                        'enabled': camera.get('enabled', 1)
                     }
                     cameras_data.append(camera_info)
         except Exception as e:
@@ -553,7 +554,7 @@ def initialize_record_app():
         if not config.check_config_file():
             logging.error("設定ファイルが見つかりません")
             return False
-        cameras = camera_utils.read_config()
+        cameras = camera_utils.reload_config()
         if not cameras:
             logging.warning("有効なカメラ設定が見つかりません")
         recording.initialize_recording()
