@@ -22,18 +22,27 @@ function createCameraElements() {
         cameraDiv.appendChild(cameraName);
         const videoWrapper = document.createElement('div');
         videoWrapper.className = 'video-wrapper';
-        const video = document.createElement('video');
-        video.id = 'video' + camera.id;
-        video.autoplay = true;
-        video.playsinline = true;
-        video.muted = true;
-        video.style.width = '320px';
-        video.style.height = '240px';
-        videoWrapper.appendChild(video);
-        const statusDiv = document.createElement('div');
-        statusDiv.className = 'stream-status';
-        statusDiv.id = 'status' + camera.id;
-        videoWrapper.appendChild(statusDiv);
+        // enabled=0ならvideo生成せずステータスのみ
+        if (camera.enabled === 0) {
+            const statusDiv = document.createElement('div');
+            statusDiv.className = 'stream-status';
+            statusDiv.id = 'status' + camera.id;
+            statusDiv.textContent = 'カメラ無効';
+            videoWrapper.appendChild(statusDiv);
+        } else {
+            const video = document.createElement('video');
+            video.id = 'video' + camera.id;
+            video.autoplay = true;
+            video.playsinline = true;
+            video.muted = true;
+            video.style.width = '320px';
+            video.style.height = '240px';
+            videoWrapper.appendChild(video);
+            const statusDiv = document.createElement('div');
+            statusDiv.className = 'stream-status';
+            statusDiv.id = 'status' + camera.id;
+            videoWrapper.appendChild(statusDiv);
+        }
         cameraDiv.appendChild(videoWrapper);
         container.appendChild(cameraDiv);
     });
@@ -47,6 +56,8 @@ function updateStreamStatus(cameraId, status) {
 }
 
 function reloadStream(cameraId) {
+    const camera = camerasData.find(c => c.id == cameraId);
+    if (camera && camera.enabled === 0) return;
     console.log(`Reloading stream for camera ${cameraId}`);
     updateStreamStatus(cameraId, '再読み込み中...');
     if (players[cameraId]) {
@@ -56,6 +67,8 @@ function reloadStream(cameraId) {
 }
 
 function initializePlayer(cameraId) {
+    const camera = camerasData.find(c => c.id == cameraId);
+    if (camera && camera.enabled === 0) return;
     const video = document.getElementById('video' + cameraId);
     // キャッシュバスターを複合化（より確実）
     const timestamp = new Date().getTime();
@@ -161,6 +174,7 @@ function initializePlayer(cameraId) {
 
 function setupHealthChecks() {
     camerasData.forEach(camera => {
+        if (camera.enabled === 0) return;
         setInterval(() => {
             checkCameraHealth(camera.id);
         }, STREAM_CHECK_INTERVAL);
@@ -168,6 +182,8 @@ function setupHealthChecks() {
 }
 
 function checkCameraHealth(cameraId) {
+    const camera = camerasData.find(c => c.id == cameraId);
+    if (camera && camera.enabled === 0) return;
     const video = document.getElementById('video' + cameraId);
     const currentTime = Date.now();
     const lastUpdateTime = streamTimestamps[cameraId] || 0;
@@ -284,16 +300,6 @@ window.onload = function() {
         initializePlayer(camera.id);
     });
     setupHealthChecks();
-    
-    // 3分おきに自動更新するタイマーを設定
-    setTimeout(function() {
-        console.log("Restarting all cameras before page refresh");
-        // 全カメラ再起動後にページをリロード
-        restartAllCameras(function() {
-            console.log("Auto-refreshing page after camera restarts");
-            location.reload();
-        });
-    }, 180000); // 180秒 = 3分
 };
 
 document.addEventListener('visibilitychange', function() {

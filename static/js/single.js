@@ -558,16 +558,6 @@ window.onload = function() {
     
     // 健全性チェックを設定
     setupHealthCheck();
-    
-    // 3分おきに自動更新するタイマーを設定
-    setTimeout(function() {
-        console.log("Restarting camera before page refresh");
-        // カメラ再起動後にページをリロード
-        restartStream(function() {
-            console.log("Auto-refreshing page after camera restart");
-            location.reload();
-        });
-    }, 180000); // 180秒 = 3分
 };
 
 // バックグラウンド切り替え時の処理
