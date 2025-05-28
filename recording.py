@@ -460,7 +460,7 @@ def monitor_recording_processes():
 
     while True:
         try:
-            cameras = camera_utils.read_config()
+            cameras = camera_utils.get_enabled_cameras()
             
             # 既に録画中のカメラのプロセスだけをチェック
             for camera in cameras:
@@ -530,7 +530,7 @@ def start_all_recordings():
     """
     success = True
     failed_cameras = []
-    cameras = camera_utils.read_config()
+    cameras = camera_utils.get_enabled_cameras()
     
     logging.info("====== 全カメラの録画開始処理を開始します ======")
     

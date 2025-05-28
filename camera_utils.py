@@ -42,10 +42,17 @@ def read_config():
 
                 # RTSPURLが空の場合はスキップ
                 if len(parts) >= 3 and parts[2].strip():
+                    enabled = 1
+                    if len(parts) >= 4 and parts[3].strip() != '':
+                        try:
+                            enabled = int(parts[3])
+                        except Exception:
+                            enabled = 1
                     cameras.append({
                         'id': parts[0],
                         'name': parts[1],
-                        'rtsp_url': parts[2]
+                        'rtsp_url': parts[2],
+                        'enabled': enabled
                     })
             
             # キャッシュを更新
@@ -339,3 +346,12 @@ def reset_camera_restart_attempts(camera_id=None):
     else:
         _camera_restart_attempts = {}
         logging.info("全カメラの再起動試行回数をリセットしました")
+
+def get_enabled_cameras():
+    """
+    有効なカメラ（enabled=1）のみを返す
+    Returns:
+        list: 有効なカメラ情報のリスト
+    """
+    cameras = read_config()
+    return [cam for cam in cameras if cam.get('enabled', 1) == 1]

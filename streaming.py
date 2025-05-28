@@ -72,6 +72,10 @@ def get_or_start_streaming(camera):
     """
     global active_streams_count
     
+    # enabled=1以外は絶対にストリーミングしない
+    if camera.get('enabled', 1) != 1:
+        logging.info(f"カメラ {camera.get('id', 'unknown')} は無効設定のためストリーミングを開始しません")
+        return False
     if camera['id'] in streaming_processes:
         # すでにストリーミング中の場合は成功を返す
         return True
@@ -736,8 +740,9 @@ def restart_camera_stream(camera_id):
         
         # 対応するカメラ情報を取得
         camera_info = camera_utils.get_camera_by_id(camera_id)
-        if not camera_info:
-            logging.error(f"カメラID {camera_id} に対するカメラ情報が見つかりません")
+        # enabled=1以外は絶対にストリーミングしない
+        if not camera_info or camera_info.get('enabled', 1) != 1:
+            logging.info(f"カメラ {camera_id} は無効設定のためストリーミングを再起動しません")
             return False
         
         # ストリーミングキューに追加して再起動
@@ -960,7 +965,7 @@ def global_health_monitor():
                 
                 # 長時間停止したカメラを検出して自動起動
                 try:
-                    all_cameras = camera_utils.read_config()
+                    all_cameras = camera_utils.get_enabled_cameras()
                     active_camera_ids = set(streaming_processes.keys())
                     
                     for camera in all_cameras:
@@ -1108,7 +1113,7 @@ def initialize_streaming():
     ffmpeg_utils.kill_ffmpeg_processes()
     
     # 各カメラのディレクトリを準備
-    cameras = camera_utils.read_config()
+    cameras = camera_utils.get_enabled_cameras()
     for camera in cameras:
         camera_dir = os.path.join(config.TMP_PATH, camera['id'])
         fs_utils.ensure_directory_exists(camera_dir)
@@ -1138,7 +1143,7 @@ def start_all_cameras_streaming(cameras=None):
     """
     try:
         if cameras is None:
-            cameras = camera_utils.read_config()
+            cameras = camera_utils.get_enabled_cameras()
         
         if not cameras:
             logging.warning("No cameras found in configuration")
@@ -1206,6 +1211,10 @@ def start_hls_streaming(camera_id):
         
         # カメラ情報の取得
         camera_info = camera_utils.get_camera_by_id(camera_id)
+        # enabled=1以外は絶対にストリーミングしない
+        if not camera_info or camera_info.get('enabled', 1) != 1:
+            logging.info(f"カメラ {camera_id} は無効設定のためHLSストリーミングを開始しません")
+            return False
         if not camera_info:
             logging.error(f"カメラID {camera_id} の情報が見つかりません")
             return False
@@ -1534,9 +1543,11 @@ def _process_ffmpeg_output(process, camera_id, rtsp_url, output_dir):
             # 再起動処理（必要に応じて実装）
             # カメラ情報を取得してストリーミングキューに追加する処理を呼び出す
             camera = camera_utils.get_camera_by_id(camera_id)
-            if camera:
-                # グローバル変数のキューに入れる
+            # enabled=1以外は絶対にストリーミングしない
+            if camera and camera.get('enabled', 1) == 1:
                 streaming_queue.put(camera)
+            else:
+                logging.info(f"カメラ {camera_id} は無効設定のため再起動しません")
         
     except Exception as e:
         logging.error(f"カメラ {camera_id} のFFmpeg出力処理中に予期しないエラー: {e}")
