@@ -19,7 +19,7 @@
                     <h4>{{ camera.name or 'カメラ' ~ camera.id }}</h4>
                 </div>
                 <div class="video-container">
-                    <video id="video{{ camera.id }}" autoplay playsinline></video>
+                    <video id="video{{ camera.id }}" autoplay playsinline muted></video>
                     <div class="stream-status" id="status-main">接続中...</div>
                     <div class="loading-spinner" id="spinner-main"></div>
                     <div class="error-overlay" id="error-main">エラーが発生しました<br>再読込してください</div>
@@ -30,11 +30,8 @@
     </div>
 
     <script>
-        // カメラ情報をJSONから安全に読み込み
-        window.cameraData = JSON.parse('{{ camera_json|safe }}');
-
-        // グローバルステータス表示の参照
-        const statusDisplay = document.getElementById('status-display');
+        window.HLS_URL = "{{ hls_url }}";
+        window.CAMERA_ID = "{{ camera.id }}";
     </script>
 
     <script src="/static/js/single.js"></script>
