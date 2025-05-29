@@ -183,7 +183,7 @@ async function checkHLSFile() {
 }
 
 async function initializePlayer() {
-    const cameraId = window.cameraData.id;
+    const cameraId = window.CAMERA_ID;
     const video = document.getElementById('video' + cameraId);
     if (!video) return;
     
@@ -195,368 +195,153 @@ async function initializePlayer() {
     const spinner = document.getElementById('spinner-main');
     if (spinner) spinner.style.display = 'block';
     
-    // 先にHLSファイルの存在確認
-    const hlsExists = await checkHLSFile();
-    if (!hlsExists) {
-        if (retryAttempts === undefined) {
-            retryAttempts = 0;
-        }
-        
-        retryAttempts++;
-        
-        if (retryAttempts <= MAX_RETRY_ATTEMPTS) {
-            updateStreamStatus(`HLSファイル待機中... (${retryAttempts}/${MAX_RETRY_ATTEMPTS})`, false);
-            setTimeout(() => initializePlayer(), RETRY_DELAY);
-        } else {
-            updateStreamStatus('HLSファイルが見つかりません', true);
-            
-            // スピナー非表示
-            if (spinner) spinner.style.display = 'none';
-            
-            // 一定時間後に再試行
-            setTimeout(() => {
-                retryAttempts = 0;
-                initializePlayer();
-            }, 10000); // 10秒後に再試行
-        }
-        return;
-    }
-    
-    // キャッシュを回避するためにタイムスタンプを追加
+    // キャッシュバスター付きHLS URLを生成
     const timestamp = new Date().getTime();
-    const filePath = `/system/cam/tmp/${cameraId}/${cameraId}.m3u8?_=${timestamp}`;
+    const pageTs = typeof pageTimestamp !== 'undefined' ? pageTimestamp : '';
+    const hlsUrl = `/system/cam/tmp/${cameraId}/${cameraId}.m3u8?t=${timestamp}&pt=${pageTs}`;
 
+    // 既存のhlsインスタンスを破棄
     if (hls) {
-        try {
-            hls.destroy();
-        } catch (e) {
-            console.error("Error destroying HLS instance:", e);
-        }
+        try { hls.destroy(); } catch (e) {}
+        hls = null;
     }
-
     retryAttempts = 0;
-    lastDataReceived = Date.now();  // 初期化時のタイムスタンプをリセット
-    updateStreamStatus('接続中...', false);
+    lastDataReceived = Date.now();
 
     if (Hls.isSupported()) {
-        console.log(`Initializing HLS player with URL: ${filePath}`);
-        
-        const hls = new Hls({
+        hls = new Hls({
             debug: false,
             enableWorker: true,
             lowLatencyMode: true,
-            backBufferLength: 10,            // バックバッファを適切な値に調整
-            maxBufferLength: 5,              // バッファ長を短く
-            maxMaxBufferLength: 10,          // 最大バッファ長を適切に
-            manifestLoadingTimeOut: 8000,    // タイムアウト値を最適化
-            manifestLoadingMaxRetry: 3,      // リトライ回数を適切に調整
-            levelLoadingTimeOut: 8000,       // タイムアウト値を最適化
-            levelLoadingMaxRetry: 3,         // リトライ回数を調整
-            fragLoadingTimeOut: 8000,        // タイムアウト値を最適化
-            fragLoadingMaxRetry: 3,          // リトライ回数を調整
-            startLevel: -1,                  // 自動選択
-            defaultAudioCodec: 'mp4a.40.2',
-            abrEwmaDefaultEstimate: 500000,  // ABR初期推定値を調整
-            // 追加の堅牢性向上オプション
-            maxBufferHole: 0.3,              // より小さな値に調整
-            maxStarvationDelay: 2,           // 遅延を短く
-            maxLoadingDelay: 2,              // 遅延を短く
-            capLevelOnFPSDrop: true,         // FPSドロップ時にレベルを制限
-            appendErrorMaxRetry: 3,          // 追加エラー時の最大リトライ回数
-            liveSyncDurationCount: 3,        // 同期カウント
-            liveMaxLatencyDurationCount: 5,  // 最大遅延カウント
-            liveDurationInfinity: false,     // 無限再生を無効に
-            emeEnabled: false,               // EMEを無効に
-            testBandwidth: true              // 帯域テストを有効に
+            backBufferLength: 0,
+            maxBufferLength: 2,
+            maxMaxBufferLength: 4,
+            liveBackBufferLength: 0,
+            liveSyncDuration: 1,
+            liveMaxLatencyDuration: 5,
+            manifestLoadingTimeOut: 5000,
+            manifestLoadingMaxRetry: 4,
+            levelLoadingTimeOut: 5000,
+            fragLoadingTimeOut: 8000,
+            fragLoadingMaxRetry: 3,
+            appendErrorMaxRetry: 3,
+            startFragPrefetch: true,
+            testBandwidth: false
         });
-
-        window.hls = hls;
-
-        hls.loadSource(filePath);
-        hls.attachMedia(video);
-
-        // マニフェスト解析完了後の再生処理
-        hls.on(Hls.Events.MANIFEST_PARSED, function() {
-            // 自動再生を試みる
-            try {
-                video.play().then(() => {
-                    console.log("Playback started successfully");
-                    updateStreamStatus('接続済', false);
-                    // スピナー非表示
-                    if (spinner) spinner.style.display = 'none';
-                }).catch(function(error) {
-                    console.log("Play failed:", error);
-                    video.muted = true;
-                    video.play().then(() => {
-                        console.log("Muted play started");
-                        updateStreamStatus('接続済（ミュート）', false);
-                        // スピナー非表示
-                        if (spinner) spinner.style.display = 'none';
-                    }).catch(function(innerError) {
-                        console.error("Muted play failed:", innerError);
-                        updateStreamStatus('再生失敗', true);
-                        // スピナー非表示
-                        if (spinner) spinner.style.display = 'none';
-                    });
-                });
-            } catch (e) {
-                console.error("Play error:", e);
-                // スピナー非表示
-                if (spinner) spinner.style.display = 'none';
-            }
-        });
-        
-        // フラグメントが正常にロードされた時のイベント
-        hls.on(Hls.Events.FRAG_LOADED, function() {
-            lastDataReceived = Date.now();
-            retryAttempts = 0; // フラグメントがロードされたらリトライカウントをリセット
-            
-            // 再生中であることを確認
-            if (video && !video.paused) {
-                lastPlayTime = video.currentTime;
-            }
-        });
-        
-        // メディアの再接続イベント
-        hls.on(Hls.Events.BUFFER_APPENDED, function() {
-            lastDataReceived = Date.now();
-            if (video.paused && pageActive) {
-                try {
-                    video.play().catch(function(error) {
-                        console.log("Resume play failed:", error);
-                    });
-                } catch (e) {}
-            }
-        });
-        
-        // エラー処理
-        hls.on(Hls.Events.ERROR, function(event, data) {
-            console.log("HLS error:", data);
-            
+        hls.on(Hls.Events.ERROR, function (event, data) {
             if (data.fatal) {
-                updateStreamStatus(`エラー: ${data.details}`, true);
-
                 switch(data.type) {
                     case Hls.ErrorTypes.NETWORK_ERROR:
-                        console.log("Network error, attempting recovery...");
-                        if (retryAttempts < MAX_RETRY_ATTEMPTS) {
-                            retryAttempts++;
-                            updateStreamStatus(`再接続中... (${retryAttempts}/${MAX_RETRY_ATTEMPTS})`, false);
-                            
-                            // 回復試行
-                            let recoveryAttempt = 0;
-                            const attemptRecovery = () => {
-                                if (hls && typeof hls.startLoad === 'function') {
-                                    try {
-                                        hls.startLoad();
-                                        recoveryAttempt++;
-                                        
-                                        // 少し待って回復を確認
-                                        setTimeout(() => {
-                                            if (video.readyState > 0) {
-                                                console.log(`Stream recovered after ${recoveryAttempt} attempt(s)`);
-                                            } else if (recoveryAttempt < RECOVERY_ATTEMPTS) {
-                                                // まだ回復していない場合は再試行
-                                                attemptRecovery();
-                                            } else {
-                                                // 回復できなかった場合はリロード
-                                                reloadStream();
-                                            }
-                                        }, 1000);
-                                    } catch (e) {
-                                        reloadStream();
-                                    }
-                                } else {
-                                    reloadStream();
-                                }
-                            };
-                            
-                            setTimeout(attemptRecovery, RETRY_DELAY);
-                        } else {
-                            // 最大再試行回数を超えたら再読み込み
-                            reloadStream();
-                        }
+                        console.error(`ネットワークエラー: ${data.details}`);
+                        reloadStream();
                         break;
                     case Hls.ErrorTypes.MEDIA_ERROR:
-                        console.log("Media error, attempting recovery...");
-                        try {
-                            // メディアエラー回復を強化
-                            hls.recoverMediaError();
-                            
-                            // 再生を試みる
-                            setTimeout(() => {
-                                if (video.paused) {
-                                    video.play().catch(e => {
-                                        console.log("Failed to resume after recovery:", e);
-                                    });
-                                }
-                            }, 1000);
-                        } catch (e) {
-                            reloadStream();
-                        }
+                        console.error(`メディアエラー: ${data.details}`);
+                        hls.recoverMediaError();
                         break;
                     default:
-                        if (retryAttempts < MAX_RETRY_ATTEMPTS) {
-                            retryAttempts++;
-                            setTimeout(() => initializePlayer(), RETRY_DELAY);
-                        } else {
-                            // 最大再試行回数を超えたら再読み込み
-                            reloadStream();
-                        }
+                        console.error(`深刻なエラー: ${data.type} - ${data.details}`);
+                        reloadStream();
                         break;
                 }
-            }
-        });
-
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
-        // Safari用のフォールバック
-        video.src = filePath;
-        video.addEventListener('loadedmetadata', function() {
-            try {
-                video.play().catch(function(error) {
-                    console.log("Play failed:", error);
-                    video.muted = true;
-                    video.play().catch(function(innerError) {
-                        console.error("Muted play failed:", innerError);
-                        updateStreamStatus('再生失敗', true);
-                        // スピナー非表示
-                        if (spinner) spinner.style.display = 'none';
-                    });
-                });
-                updateStreamStatus('接続済', false);
-                // スピナー非表示
-                if (spinner) spinner.style.display = 'none';
-            } catch (e) {
-                console.error("Play error:", e);
-                // スピナー非表示
-                if (spinner) spinner.style.display = 'none';
-            }
-        });
-        
-        // Safari用のイベントリスナー
-        video.addEventListener('playing', function() {
-            lastDataReceived = Date.now();
-            lastPlayTime = video.currentTime;
-            updateStreamStatus('接続済', false);
-        });
-        
-        video.addEventListener('error', function(e) {
-            console.error("Video error:", e);
-            updateStreamStatus(`エラー: ${video.error ? video.error.message : '不明'}`, true);
-            
-            if (retryAttempts < MAX_RETRY_ATTEMPTS) {
-                retryAttempts++;
-                setTimeout(() => initializePlayer(), RETRY_DELAY);
             } else {
-                reloadStream();
+                console.warn(`非致命的なエラー: ${data.details}`);
             }
         });
+        hls.on(Hls.Events.MANIFEST_PARSED, function() {
+            video.play().catch(e => console.warn('自動再生に失敗:', e));
+            if (spinner) spinner.style.display = 'none';
+            updateStreamStatus('接続済');
+        });
+        hls.on(Hls.Events.FRAG_LOADED, function() {
+            lastDataReceived = Date.now();
+        });
+        hls.loadSource(hlsUrl);
+        hls.attachMedia(video);
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = hlsUrl;
+        video.addEventListener('loadedmetadata', function() {
+            video.play().catch(e => console.warn('自動再生に失敗:', e));
+            if (spinner) spinner.style.display = 'none';
+            updateStreamStatus('接続済');
+        });
+    } else {
+        updateStreamStatus('HLS未対応ブラウザ', true);
     }
+    video.addEventListener('error', function(e) {
+        console.error('VIDEO ERROR:', e, video.error);
+        updateStreamStatus('ビデオエラー', true);
+    });
 }
 
-// ストリーミングの健全性チェック
+// 健全性監視をindex.js流に強化
 function setupHealthCheck() {
     setInterval(() => {
-        if (!healthCheckActive) return; // 健全性チェックが非アクティブならスキップ
-        
-        const cameraId = window.cameraData.id;
+        if (!healthCheckActive) return;
+        const cameraId = window.CAMERA_ID;
         const video = document.getElementById('video' + cameraId);
         if (!video) return;
-        
-        const currentTime = Date.now();
-        const timeSinceLastUpdate = currentTime - lastDataReceived;
-        
-        // HLSファイル存在チェック (定期的)
-        if (retryAttempts === 0) {
-            checkHLSFile().then(exists => {
-                if (!exists) {
-                    console.log("HLS file no longer exists, reloading stream...");
-                    reloadStream();
-                }
-            });
-        }
-        
-        // 再生状態チェック - readyState 0はストリームが読み込まれていない状態
-        if (video.readyState === 0 && timeSinceLastUpdate > 5000) { // 5秒
-            console.log("Stream not loaded, attempting recovery...");
+        const now = Date.now();
+        const elapsed = now - lastDataReceived;
+        // readyState=0はストリーム未ロード
+        if (video.readyState === 0) {
+            console.log('ストリーム未ロード、回復試行');
             updateStreamStatus('再接続中...', false);
             reloadStream();
             return;
         }
-        
-        // データ受信チェック - 一定時間データが来ていなければ再接続
-        if (timeSinceLastUpdate > STREAM_STALL_TIMEOUT) {
-            console.log(`Stream stalled (no data for ${timeSinceLastUpdate/1000}s), reloading...`);
+        // データが一定時間更新されていない場合
+        if (elapsed > 10000) {
+            console.warn(`ストリームが${(elapsed/1000).toFixed(1)}秒間更新なし。再読み込み`);
             updateStreamStatus('データ停止 - 再読み込み中...', true);
             reloadStream();
             return;
         }
-        
-        // バッファリングチェック - ビデオが一時停止しているかチェック
+        // バッファリング状態の監視
         if (!video.paused && video.readyState > 1 && video.played.length > 0) {
-            // ビデオは再生中だが、バッファリングが発生している可能性がある
             if (video.buffered.length > 0) {
                 const bufferedEnd = video.buffered.end(video.buffered.length - 1);
                 const bufferedTime = bufferedEnd - video.currentTime;
-                
-                // バッファリング時間が極端に短い場合はストリームが詰まっている可能性
                 if (bufferedTime < 0.5 && video.readyState < 4) {
-                    console.log(`Insufficient buffer (${bufferedTime.toFixed(2)}s), may be stalling`);
+                    console.log(`バッファ不足(${bufferedTime.toFixed(2)}s)`);
                     updateStreamStatus('バッファリング中...', false);
-                    
-                    // バッファリングが発生した場合、再生を一時停止して再開してみる
                     if (bufferedTime < 0.2 && hls) {
                         try {
-                            // 短い一時停止と再開を試みる
                             video.pause();
                             setTimeout(() => {
-                                video.play().catch(e => console.error("Resume failed:", e));
+                                video.play().catch(e => console.error('再開失敗:', e));
                             }, 500);
                         } catch (e) {
-                            console.error("Error handling buffering:", e);
+                            console.error('バッファ処理エラー:', e);
                         }
                     }
                 }
             }
         }
-        
-        // 再生が止まっていないかチェック
+        // 再生が止まっていないか
         if (!video.paused && video.played.length > 0) {
-            // 現在位置が変わっていなければ再生が止まっている可能性がある
-            if (Math.abs(video.currentTime - lastPlayTime) < 0.1 && 
-                timeSinceLastUpdate > 5000) {
-                console.log("Playback may be frozen, attempting recovery");
+            if (Math.abs(video.currentTime - lastPlayTime) < 0.1 && elapsed > 5000) {
+                console.log('再生停止、回復試行');
                 updateStreamStatus('再生停止 - 回復中...', true);
-                
-                // 数秒戻って再生を試みる
                 try {
                     video.currentTime = Math.max(0, video.currentTime - 2);
                     video.play().catch(e => {
-                        console.error("Recovery play failed:", e);
+                        console.error('回復再生失敗:', e);
                         reloadStream();
                     });
                 } catch(e) {
-                    console.error("Recovery error:", e);
+                    console.error('回復エラー:', e);
                     reloadStream();
                 }
             }
-            
-            // 最後の再生位置を記録
             lastPlayTime = video.currentTime;
         }
-    }, HEALTH_CHECK_INTERVAL);
+    }, 5000);
 }
 
 window.onload = function() {
     console.log("Page loaded, initializing player...");
-    
-    // イベントリスナーの設定
-    setupEventListeners();
-    
-    // プレイヤーの初期化
     initializePlayer();
-    
-    // 健全性チェックを設定
     setupHealthCheck();
 };
 
