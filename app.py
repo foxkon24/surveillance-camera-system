@@ -109,20 +109,33 @@ def index_single():
         return 'Camera ID not specified', 400
 
     cameras = camera_utils.reload_config()
-
     target_camera = next((camera for camera in cameras if camera['id'] == camera_id), None)
     if target_camera is None:
         return 'Camera not found', 404
 
+    # ワーカースレッドを必ず起動
+    streaming.start_streaming_workers()
     streaming.get_or_start_streaming(target_camera)
 
-    # ストリームの初期化を少し長めに待つ
-    time.sleep(2)
+    # HLSファイル（.m3u8）が生成されるまで最大10秒待機
+    hls_path = os.path.join(config.TMP_PATH, camera_id, f"{camera_id}.m3u8")
+    max_wait = 10
+    waited = 0
+    while not os.path.exists(hls_path) and waited < max_wait:
+        time.sleep(1)
+        waited += 1
 
-    # JSONとしてカメラデータを渡す
-    camera_json = json.dumps(target_camera)
+    # キャッシュバスター用タイムスタンプ
+    timestamp = int(time.time())
+    # HLSストリームURL（キャッシュバスター付き）
+    hls_url = f"/tmp/{camera_id}/{camera_id}.m3u8?ts={timestamp}"
 
-    return render_template('single.html', camera=target_camera, camera_json=camera_json)
+    return render_template(
+        'single.html',
+        camera=target_camera,
+        hls_url=hls_url,
+        timestamp=timestamp
+    )
 
 @app.route('/system/cam/api/restart_stream/<camera_id>')
 def restart_stream(camera_id):
