@@ -152,12 +152,19 @@ def start_new_recording(camera_id, rtsp_url):
         # FFmpegコマンド構築（RTSP→MP4専用）
         ffmpeg_cmd = [
             config.FFMPEG_PATH,
+            '-loglevel', 'debug',
             '-rtsp_transport', 'tcp',
             '-buffer_size', '32768k',
             '-use_wallclock_as_timestamps', '1',
             '-i', rtsp_url,
             '-r', '30',
-            '-c:v', 'copy'
+            '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p',
+            '-c:v', 'h264_nvenc',
+            '-gpu', '0',
+            '-preset', 'fast',
+            '-rc', 'vbr',
+            '-profile:v', 'high',
+            '-b:v', '4M'
         ]
         if has_audio:
             ffmpeg_cmd.extend([
@@ -373,10 +380,19 @@ def check_recording_duration(camera_id):
                             has_audio = ffmpeg_utils.check_audio_stream(rtsp_url_to_use)
                             ffmpeg_cmd = [
                                 config.FFMPEG_PATH,
+                                '-loglevel', 'debug',
                                 '-rtsp_transport', 'tcp',
+                                '-buffer_size', '32768k',
+                                '-use_wallclock_as_timestamps', '1',
                                 '-i', rtsp_url_to_use,
                                 '-r', '30',
-                                '-c:v', 'copy'
+                                '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p',
+                                '-c:v', 'h264_nvenc',
+                                '-gpu', '0',
+                                '-preset', 'fast',
+                                '-rc', 'vbr',
+                                '-profile:v', 'high',
+                                '-b:v', '4M'
                             ]
                             if has_audio:
                                 ffmpeg_cmd.extend([

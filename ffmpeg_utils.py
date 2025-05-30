@@ -638,38 +638,41 @@ def get_hls_streaming_command(input_url, output_path, segment_time=1, buffer_siz
         config.FFMPEG_PATH,
         '-rtsp_transport', 'tcp',
         '-buffer_size', buffer_size,
-        '-max_delay', '100000',  # 最大遅延を大幅短縮（0.1秒）
-        '-analyzeduration', '1000000',  # 分析時間を短縮（1秒）
-        '-probesize', '1000000',  # プローブサイズを小さく（1MB）
-        '-fflags', '+genpts+discardcorrupt+igndts+ignidx+flush_packets',  # パケットフラッシュを追加
-        '-err_detect', 'ignore_err',  # エラー検出を緩和
-        '-avoid_negative_ts', 'make_zero',  # 負のタイムスタンプを修正
-        '-use_wallclock_as_timestamps', '1',  # 壁時計タイムスタンプを使用
-        '-thread_queue_size', '512',  # スレッドキューサイズを増加
-        '-flags', '+global_header',  # グローバルヘッダーを有効化
+        '-max_delay', '100000',
+        '-analyzeduration', '1000000',
+        '-probesize', '1000000',
+        '-fflags', '+genpts+discardcorrupt+igndts+ignidx+flush_packets',
+        '-err_detect', 'ignore_err',
+        '-avoid_negative_ts', 'make_zero',
+        '-use_wallclock_as_timestamps', '1',
+        '-thread_queue_size', '512',
+        '-flags', '+global_header',
         '-i', input_url,
-        '-c:v', 'copy',
-        '-c:a', 'copy',
-        '-async', '1',  # 音声同期を強制
-        '-vsync', 'cfr',  # 一定フレームレートを強制
-        '-fps_mode', 'cfr',  # フレームレートモードを一定に
-        '-force_key_frames', f'expr:gte(t,n_forced*{segment_time})',  # キーフレームを強制
-        '-sc_threshold', '0',  # シーン変更検出を無効化
-        '-g', str(segment_time * 30),  # GOP長を短く調整（30fps想定）
-        '-movflags', 'empty_moov+omit_tfhd_offset+frag_keyframe+default_base_moof',  # HLSストリーミング最適化
-        '-hls_time', str(segment_time),  # セグメント時間を1秒に短縮
-        '-hls_list_size', str(config.HLS_PLAYLIST_SIZE),  # プレイリストサイズを12セグメントに増加（長時間運用対応）
+        '-c:v', 'libx264',
+        '-preset', 'veryfast',
+        '-tune', 'zerolatency',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-ar', '44100',
+        '-ac', '2',
+        '-async', '1',
+        '-vsync', 'cfr',
+        '-fps_mode', 'cfr',
+        '-force_key_frames', f'expr:gte(t,n_forced*{segment_time})',
+        '-sc_threshold', '0',
+        '-g', str(segment_time * 30),
+        '-movflags', 'empty_moov+omit_tfhd_offset+frag_keyframe+default_base_moof',
+        '-hls_time', str(segment_time),
+        '-hls_list_size', str(config.HLS_PLAYLIST_SIZE),
         '-hls_flags', 'delete_segments+independent_segments+split_by_time',
         '-hls_segment_type', 'mpegts',
         '-hls_segment_filename', os.path.join(output_dir, f"{filename}-%05d.ts"),
-        '-hls_start_number_source', 'datetime',  # セグメント番号を日時ベースに
-        '-hls_allow_cache', '0',  # キャッシュを無効化してリアルタイム性向上
-        '-start_number', '1',  # セグメント番号を1から開始
-        '-muxdelay', '0',  # マルチプレクサ遅延を無効化
-        '-muxpreload', '0',  # プリロードを無効化
-        '-max_muxing_queue_size', '4096',  # キューサイズを適度に設定
-        '-tune', 'zerolatency',  # ゼロ遅延チューニング（可能な場合）
-        '-preset', 'ultrafast',  # 超高速プリセット（エンコードする場合）
+        '-hls_start_number_source', 'datetime',
+        '-hls_allow_cache', '0',
+        '-start_number', '1',
+        '-muxdelay', '0',
+        '-muxpreload', '0',
+        '-max_muxing_queue_size', '4096',
         '-f', 'hls',
         '-y',
         output_path
@@ -760,56 +763,62 @@ def get_ffmpeg_record_command(rtsp_url, output_path, camera_id=None):
     if use_hls:
         hls_url = f"http://localhost:5000/system/cam/tmp/{camera_id}/{camera_id}.m3u8"
         logging.info(f"カメラ{camera_id}はHLSソース（{hls_url}）から録画します")
-        
         return [
             'ffmpeg',
-            '-protocol_whitelist', 'file,http,https,tcp,tls',  # 許可プロトコル
-            '-i', hls_url,                                    # HLSストリーム入力
-            '-r', '30',                                       # 30fpsを明示的に指定
-            '-c:v', 'copy',                                   # ビデオコーデックをコピー
-            '-c:a', 'aac',                                    # 音声コーデック
-            '-b:a', '128k',                                   # 音声ビットレート
-            '-ar', '44100',                                   # サンプリングレート
-            '-ac', '2',                                       # ステレオ音声
-            '-max_muxing_queue_size', '2048',                 # キューサイズを増加
-            '-fflags', '+genpts+discardcorrupt+igndts',       # タイムスタンプ問題対策を追加
-            '-avoid_negative_ts', 'make_zero',                # 負のタイムスタンプを回避
-            '-start_at_zero',                                 # ゼロから開始
-            '-fps_mode', 'cfr',                               # 一定フレームレート（-vsyncの代わり）
-            '-async', '1',                                    # 音声同期
-            '-movflags', '+faststart+frag_keyframe',          # MP4ファイル最適化
-            '-y',                                             # 既存のファイルを上書き
+            '-protocol_whitelist', 'file,http,https,tcp,tls',
+            '-hwaccel', 'cuda',
+            '-c:v', 'h264_cuvid',
+            '-i', hls_url,
+            '-c:v', 'h264_nvenc',
+            '-preset', 'fast',
+            '-tune', 'zerolatency',
+            '-r', '30',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-ar', '44100',
+            '-ac', '2',
+            '-max_muxing_queue_size', '2048',
+            '-fflags', '+genpts+discardcorrupt+igndts',
+            '-avoid_negative_ts', 'make_zero',
+            '-start_at_zero',
+            '-fps_mode', 'cfr',
+            '-async', '1',
+            '-movflags', '+faststart+frag_keyframe',
+            '-y',
             output_path
         ]
     
     # RTSPストリームを直接使用
     logging.info(f"カメラ{camera_id if camera_id else 'unknown'}はRTSPストリームから直接録画します: {rtsp_url}")
-    
     return [
         'ffmpeg',
-        '-rtsp_transport', 'tcp',                         # TCPトランスポートを使用
-        '-analyzeduration', '10000000',                   # ストリーム解析時間を増加（10秒）
-        '-probesize', '5000000',                          # プローブサイズを増加（5MB）
-        '-buffer_size', '30720k',                         # バッファサイズを設定
-        '-use_wallclock_as_timestamps', '1',              # 壁時計タイムスタンプを使用
-        '-timeout', '10000000',                           # 接続タイムアウト（10秒）
-        '-rw_timeout', '10000000',                        # 読み書きタイムアウト（10秒）
-        '-xerror', '',                                    # 多くのエラーを致命的でないものとして扱う
-        '-i', rtsp_url,                                   # RTSPストリーム入力
-        '-r', '30',                                       # 30fpsを明示的に指定
-        '-c:v', 'copy',                                   # ビデオコーデックをコピー
-        '-c:a', 'aac',                                    # 音声コーデック
-        '-b:a', '128k',                                   # 音声ビットレート
-        '-ar', '44100',                                   # サンプリングレート
-        '-ac', '2',                                       # ステレオ音声
-        '-max_muxing_queue_size', '2048',                 # キューサイズを増加
-        '-fflags', '+genpts+discardcorrupt+igndts',       # タイムスタンプ問題対策を追加
-        '-avoid_negative_ts', 'make_zero',                # 負のタイムスタンプを回避
-        '-async', '1',                                    # 音声同期
-        '-fps_mode', 'cfr',                               # 一定フレームレート（-vsyncの代わり）
-        '-start_at_zero',                                 # ゼロから開始
-        '-movflags', '+faststart+frag_keyframe',          # MP4ファイル最適化
-        '-y',                                             # 既存のファイルを上書き
+        '-rtsp_transport', 'tcp',
+        '-hwaccel', 'cuda',
+        '-c:v', 'h264_cuvid',
+        '-analyzeduration', '10000000',
+        '-probesize', '5000000',
+        '-buffer_size', '30720k',
+        '-use_wallclock_as_timestamps', '1',
+        '-timeout', '10000000',
+        '-rw_timeout', '10000000',
+        '-xerror', '',
+        '-i', rtsp_url,
+        '-c:v', 'h264_nvenc',
+        '-preset', 'fast',
+        '-tune', 'zerolatency',
+        '-r', '30',
+        '-c:a', 'aac',
+        '-b:a', '128k',
+        '-ar', '44100',
+        '-ac', '2',
+        '-max_muxing_queue_size', '2048',
+        '-fflags', '+genpts+discardcorrupt+igndts',
+        '-avoid_negative_ts', 'make_zero',
+        '-start_at_zero',
+        '-fps_mode', 'cfr',
+        '-async', '1',
+        '-movflags', '+faststart+frag_keyframe',
+        '-y',
         output_path
     ]
 
