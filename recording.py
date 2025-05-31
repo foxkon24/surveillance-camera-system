@@ -840,3 +840,122 @@ def check_disk_space(camera_id):
     except Exception as e:
         logging.error(f"ディスク容量チェック中にエラーが発生しました: {str(e)}")
         return False
+
+def self_heal_recording_system():
+    """
+    録画分割・プロセス・ファイルの異常を自動検知し、恒久修正サイクルを回す自己修復監視関数
+    """
+    CHECK_INTERVAL = 60  # 監視間隔（秒）
+    MAX_NO_UPDATE_MINUTES = config.MAX_RECORDING_MINUTES + 2  # 許容する最大ファイル無更新時間
+    anomaly_counts = {}  # カメラごとの連続異常回数
+    while True:
+        try:
+            for camera_id, rec_info in list(recording_processes.items()):
+                proc = rec_info.get('process')
+                file_path = rec_info.get('file_path')
+                last_update = None
+                if file_path and os.path.exists(file_path):
+                    last_update = datetime.fromtimestamp(os.path.getmtime(file_path))
+                now = datetime.now()
+                # 1. プロセス生存・ゾンビ化監視
+                if proc is not None:
+                    if proc.poll() is not None or not psutil.pid_exists(proc.pid):
+                        logging.error(f"[SELF-HEAL] カメラ{camera_id}の録画プロセスが異常終了/ゾンビ化。自動修復を試みます")
+                        anomaly_counts[camera_id] = anomaly_counts.get(camera_id, 0) + 1
+                        _dump_anomaly(camera_id, 'process_zombie', file_path)
+                        stop_recording(camera_id)
+                        time.sleep(2)
+                        cam = camera_utils.get_camera_by_id(camera_id)
+                        if cam and cam.get('rtsp_url'):
+                            start_recording(camera_id, cam['rtsp_url'])
+                        continue
+                # 2. ファイルサイズ・生成間隔監視
+                if file_path and os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path)
+                    if file_size < 1024 * 1024:  # 1MB未満
+                        logging.warning(f"[SELF-HEAL] カメラ{camera_id}の録画ファイルが小さすぎます。不完全ファイルとして削除・再録画")
+                        anomaly_counts[camera_id] = anomaly_counts.get(camera_id, 0) + 1
+                        _dump_anomaly(camera_id, 'file_too_small', file_path)
+                        stop_recording(camera_id)
+                        time.sleep(2)
+                        cam = camera_utils.get_camera_by_id(camera_id)
+                        if cam and cam.get('rtsp_url'):
+                            start_recording(camera_id, cam['rtsp_url'])
+                        continue
+                    # ファイル更新間隔監視
+                    if last_update and (now - last_update).total_seconds() > MAX_NO_UPDATE_MINUTES * 60:
+                        logging.error(f"[SELF-HEAL] カメラ{camera_id}の録画ファイルが{MAX_NO_UPDATE_MINUTES}分以上更新されていません。自動修復を試みます")
+                        anomaly_counts[camera_id] = anomaly_counts.get(camera_id, 0) + 1
+                        _dump_anomaly(camera_id, 'file_no_update', file_path)
+                        stop_recording(camera_id)
+                        time.sleep(2)
+                        cam = camera_utils.get_camera_by_id(camera_id)
+                        if cam and cam.get('rtsp_url'):
+                            start_recording(camera_id, cam['rtsp_url'])
+                        continue
+                # 2.5. ディレクトリ内最新ファイルの生成間隔監視
+                record_dir = os.path.dirname(file_path) if file_path else None
+                if record_dir and os.path.exists(record_dir):
+                    mp4_files = [f for f in os.listdir(record_dir) if f.endswith('.mp4') and not f.endswith('.temp.mp4')]
+                    if mp4_files:
+                        latest_mp4 = max(mp4_files, key=lambda f: os.path.getmtime(os.path.join(record_dir, f)))
+                        latest_mp4_path = os.path.join(record_dir, latest_mp4)
+                        latest_mp4_time = datetime.fromtimestamp(os.path.getmtime(latest_mp4_path))
+                        if (now - latest_mp4_time).total_seconds() > MAX_NO_UPDATE_MINUTES * 60:
+                            logging.error(f"[SELF-HEAL] カメラ{camera_id}の録画ディレクトリ内で最新mp4ファイルが{MAX_NO_UPDATE_MINUTES}分以上生成・更新されていません。自動修復を試みます")
+                            anomaly_counts[camera_id] = anomaly_counts.get(camera_id, 0) + 1
+                            _dump_anomaly(camera_id, 'dir_no_new_mp4', latest_mp4_path)
+                            stop_recording(camera_id)
+                            time.sleep(2)
+                            cam = camera_utils.get_camera_by_id(camera_id)
+                            if cam and cam.get('rtsp_url'):
+                                start_recording(camera_id, cam['rtsp_url'])
+                            continue
+                # 3. 一時ファイル残存監視
+                if record_dir and os.path.exists(record_dir):
+                    for fname in os.listdir(record_dir):
+                        if fname.endswith('.temp.mp4'):
+                            temp_path = os.path.join(record_dir, fname)
+                            try:
+                                os.remove(temp_path)
+                                logging.info(f"[SELF-HEAL] 残存一時ファイルを自動削除: {temp_path}")
+                            except Exception as e:
+                                logging.error(f"[SELF-HEAL] 一時ファイル削除失敗: {temp_path}, {e}")
+                # 4. 連続異常発生時のバックオフ・アラート
+                if anomaly_counts.get(camera_id, 0) >= 3:
+                    logging.critical(f"[SELF-HEAL] カメラ{camera_id}で連続異常が3回以上発生。バックオフし管理者に通知してください")
+                    # ここで通知や外部連携処理を追加可能
+                    time.sleep(120)  # 2分バックオフ
+                    anomaly_counts[camera_id] = 0
+        except Exception as e:
+            logging.error(f"[SELF-HEAL] 自己修復監視サイクルで例外: {e}")
+        time.sleep(CHECK_INTERVAL)
+
+def _dump_anomaly(camera_id, anomaly_type, file_path):
+    """
+    異常発生時の詳細ダンプを自動保存
+    """
+    try:
+        dump_dir = os.path.join(config.BASE_PATH, 'log', 'self_heal')
+        os.makedirs(dump_dir, exist_ok=True)
+        now = datetime.now().strftime('%Y%m%d_%H%M%S')
+        dump_file = os.path.join(dump_dir, f"{camera_id}_{anomaly_type}_{now}.log")
+        with open(dump_file, 'w', encoding='utf-8') as f:
+            f.write(f"camera_id: {camera_id}\n")
+            f.write(f"anomaly_type: {anomaly_type}\n")
+            f.write(f"file_path: {file_path}\n")
+            f.write(f"datetime: {now}\n")
+            if file_path and os.path.exists(file_path):
+                f.write(f"file_size: {os.path.getsize(file_path)}\n")
+                f.write(f"last_update: {datetime.fromtimestamp(os.path.getmtime(file_path))}\n")
+            f.write(f"process_list: {psutil.pids()}\n")
+    except Exception as e:
+        logging.error(f"[SELF-HEAL] 異常ダンプ保存失敗: {e}")
+
+# 監視スレッドの起動部の直後に追加
+try:
+    self_heal_thread = threading.Thread(target=self_heal_recording_system, daemon=True)
+    self_heal_thread.start()
+    logging.info("Started self-heal recording system thread")
+except Exception as e:
+    logging.error(f"Failed to start self-heal thread: {e}")
