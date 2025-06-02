@@ -96,29 +96,6 @@ def start_new_recording(camera_id, rtsp_url):
             stop_recording(camera_id)
             time.sleep(2)  # 停止処理の完了を待機
 
-        # RTSP接続の確認（リトライ処理）
-        rtsp_ok = False
-        max_retries = 5
-        last_error_message = ''
-        
-        for attempt in range(1, max_retries + 1):
-            logging.info(f"RTSP connection check: {rtsp_url}")
-            success, err_msg = ffmpeg_utils.check_rtsp_connection(rtsp_url)
-            if success:
-                rtsp_ok = True
-                break
-            else:
-                last_error_message = err_msg
-                logging.warning(f"RTSP接続失敗: {rtsp_url}（{attempt}回目） エラー: {err_msg}")
-                if attempt < max_retries:
-                    backoff_time = 5 if "Operation not permitted" in err_msg else 2
-                    logging.info(f"{backoff_time}秒間待機してリトライします...")
-                    time.sleep(backoff_time)
-
-        if not rtsp_ok:
-            logging.error(f"カメラ{camera_id}はRTSPに接続できません。録画を開始できません。")
-            return False
-
         # ディスク容量チェック
         logging.info(f"Free space check for camera {camera_id}")
         if not check_disk_space(camera_id):
@@ -131,62 +108,49 @@ def start_new_recording(camera_id, rtsp_url):
         file_path = os.path.join(record_dir, f"{camera_id}_{timestamp}.mp4")
         logging.info(f"Generated record file path: {file_path}")
         logging.info(f"Recording will be saved to: {file_path}")
-        
-        # 音声ストリームの確認
-        has_audio = False
-        logging.info(f"音声ストリームの確認: {rtsp_url}")
-        has_audio = ffmpeg_utils.check_audio_stream(rtsp_url)
-        if has_audio:
-            logging.info(f"Audio stream detected for {rtsp_url}")
-        else:
-            logging.info(f"No audio stream detected for {rtsp_url}")
 
-        # ディスク空き容量をログに出力
+        # HLSストリームの有無を確認
+        hls_url = f"http://localhost:5000/system/cam/tmp/{camera_id}/{camera_id}.m3u8"
+        use_hls = False
         try:
-            free_space = fs_utils.get_free_space(record_dir) / (1024 * 1024 * 1024)
-            logging.info(f"Free space on drive D:: {free_space:.2f} GB")
-            logging.info(f"Free space in {record_dir}: {free_space:.2f} GB")
+            import requests
+            response = requests.head(hls_url, timeout=2)
+            if response.status_code == 200:
+                logging.info(f"カメラ{camera_id}はHLSソース（{hls_url}）を使用可能です")
+                use_hls = True
+            else:
+                logging.info(f"カメラ{camera_id}のHLSソースは利用できません: ステータスコード {response.status_code}")
         except Exception as e:
-            logging.warning(f"ディスク空き容量の確認中にエラー: {str(e)}")
-        
-        # FFmpegコマンド構築（RTSP→MP4専用）
-        ffmpeg_cmd = [
-            config.FFMPEG_PATH,
-            '-loglevel', 'debug',
-            '-rtsp_transport', 'tcp',
-            '-buffer_size', '32768k',
-            '-use_wallclock_as_timestamps', '1',
-            '-i', rtsp_url,
-            '-r', '30',
-            '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p',
-            '-c:v', 'h264_nvenc',
-            '-gpu', '0',
-            '-preset', 'fast',
-            '-rc', 'vbr',
-            '-profile:v', 'high',
-            '-b:v', '4M'
-        ]
-        if has_audio:
-            ffmpeg_cmd.extend([
-                '-c:a', 'aac',
-                '-b:a', '128k',
-                '-ar', '44100',
-                '-ac', '2'
-            ])
-        else:
-            ffmpeg_cmd.extend(['-an'])
-        ffmpeg_cmd.extend([
-            '-max_muxing_queue_size', '2048',
-            '-fflags', '+genpts+discardcorrupt+igndts',
-            '-avoid_negative_ts', 'make_zero',
-            '-start_at_zero',
-            '-fps_mode', 'cfr',
-            '-async', '1',
-            '-movflags', '+faststart+frag_keyframe',
-            '-y', file_path
-        ])
+            logging.warning(f"HLSストリーム確認中にエラーが発生しました({e})。カメラ{camera_id}はRTSPから直接録画します")
 
-        cmd_str = ' '.join(ffmpeg_cmd)
+        # HLSが利用可能ならHLS経由で録画
+        if use_hls:
+            ffmpeg_cmd = ffmpeg_utils.get_ffmpeg_record_command(rtsp_url, file_path, camera_id)
+            logging.info(f"HLS経由で録画を開始します: {hls_url}")
+        else:
+            # RTSP接続の確認（リトライ処理）
+            rtsp_ok = False
+            max_retries = 5
+            last_error_message = ''
+            for attempt in range(1, max_retries + 1):
+                logging.info(f"RTSP connection check: {rtsp_url}")
+                success, err_msg = ffmpeg_utils.check_rtsp_connection(rtsp_url)
+                if success:
+                    rtsp_ok = True
+                    break
+                else:
+                    last_error_message = err_msg
+                    logging.warning(f"RTSP接続失敗: {rtsp_url}（{attempt}回目） エラー: {err_msg}")
+                    if attempt < max_retries:
+                        backoff_time = 5 if "Operation not permitted" in err_msg else 2
+                        logging.info(f"{backoff_time}秒間待機してリトライします...")
+                        time.sleep(backoff_time)
+            if not rtsp_ok:
+                logging.error(f"カメラ{camera_id}はRTSPに接続できません。録画を開始できません。")
+                return False
+            ffmpeg_cmd = ffmpeg_utils.get_ffmpeg_record_command(rtsp_url, file_path, camera_id)
+
+        cmd_str = ' '.join(str(x) for x in ffmpeg_cmd)
         logging.info(f"Executing FFmpeg command: {cmd_str}")
         logging.info(f"Starting FFmpeg process with command: {cmd_str}")
 
@@ -207,7 +171,7 @@ def start_new_recording(camera_id, rtsp_url):
                 'url': rtsp_url,
                 'file_path': file_path,
                 'start_time': start_time,
-                'hls': False,  # HLSは常にFalse
+                'hls': use_hls,
             }
             recording_start_times[camera_id] = start_time
             time.sleep(0.5)
@@ -217,10 +181,20 @@ def start_new_recording(camera_id, rtsp_url):
                     threading.Thread(target=monitor_ffmpeg_output, args=(process, camera_id), daemon=True).start()
                 return True
             else:
-                logging.error(f"FFmpeg process failed to start for camera {camera_id}")
+                # プロセスが即時終了した場合、stderr全文をログ出力
+                try:
+                    stderr_output = process.stderr.read().decode('utf-8', errors='replace')
+                    logging.error(f"FFmpeg process failed to start for camera {camera_id}. STDERR:\n{stderr_output}")
+                except Exception as e:
+                    logging.error(f"FFmpeg stderr読み取り中に例外: {e}")
                 return False
         else:
-            logging.error(f"FFmpeg process failed to start for camera {camera_id}")
+            # プロセスが即時終了した場合、stderr全文をログ出力
+            try:
+                stderr_output = process.stderr.read().decode('utf-8', errors='replace')
+                logging.error(f"FFmpeg process failed to start for camera {camera_id}. STDERR:\n{stderr_output}")
+            except Exception as e:
+                logging.error(f"FFmpeg stderr読み取り中に例外: {e}")
             return False
     except Exception as e:
         logging.error(f"Error in start_new_recording for camera {camera_id}: {e}")
