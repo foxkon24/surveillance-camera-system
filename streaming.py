@@ -308,6 +308,7 @@ def start_streaming_process(camera):
             except Exception as e:
                 logging.error(f"RTSP接続確認中にエラーが発生: {e}")
             
+            cleanup_camera_resources(camera['id'])
             return False
 
         # プロセス情報を設定
@@ -410,13 +411,7 @@ def start_streaming_process(camera):
         error_traceback = traceback.format_exc()
         logging.error(f"カメラ {camera['id']} のストリーミングプロセス開始中にエラーが発生: {e}")
         logging.error(f"詳細なエラー情報: {error_traceback}")
-        # プロセスの後片付け
-        if camera['id'] in streaming_processes:
-            try:
-                ffmpeg_utils.terminate_process(streaming_processes[camera['id']])
-            except:
-                pass
-            del streaming_processes[camera['id']]
+        cleanup_camera_resources(camera['id'])
         return False
 
 def restart_streaming(camera_id):
@@ -530,7 +525,6 @@ def monitor_streaming_process(camera_id, process):
     
     finally:
         logging.info(f"カメラ {camera_id} の監視スレッドを終了しました")
-        
         # もしプロセスがまだ終了していなければ終了させる
         try:
             if camera_id in streaming_processes and process.poll() is None:
@@ -541,13 +535,8 @@ def monitor_streaming_process(camera_id, process):
                     process.kill()
         except:
             pass
-        
         # ストリーミングプロセスをクリーンアップして再ストリーミングができるようにする
-        with streaming_lock:
-            if camera_id in streaming_processes:
-                del streaming_processes[camera_id]
-                active_streams_count = max(0, active_streams_count - 1)
-                logging.info(f"カメラ {camera_id} のストリーミングプロセスを削除しました。アクティブストリーム: {active_streams_count}")
+        cleanup_camera_resources(camera_id)
 
 def check_hls_file_health(camera_id):
     """
@@ -730,10 +719,7 @@ def restart_camera_stream(camera_id):
         # ストリーミングプロセスから削除
         with streaming_lock:
             if camera_id in streaming_processes:
-                del streaming_processes[camera_id]
-                # アクティブストリーム数を調整（0未満にならないよう注意）
-                global active_streams_count
-                active_streams_count = max(0, active_streams_count - 1)
+                cleanup_camera_resources(camera_id)
         
         # 標準の待機時間
         time.sleep(1)
@@ -761,37 +747,33 @@ def cleanup_camera_resources(camera_id):
     Args:
         camera_id (str): クリーンアップするカメラID
     """
+    global active_streams_count
     try:
         logging.info(f"Cleaning up resources for camera {camera_id}")
-        
         # ストリーミングキャッシュから削除
-        if camera_id in streaming_processes:
-            process = streaming_processes[camera_id]
-            
-            try:
-                # プロセスを停止
-                ffmpeg_utils.terminate_process(process)
-            except:
-                pass
-                
-            del streaming_processes[camera_id]
-        
+        with streaming_lock:
+            if camera_id in streaming_processes:
+                process = streaming_processes[camera_id]
+                try:
+                    # プロセスを停止
+                    ffmpeg_utils.terminate_process(process)
+                except:
+                    pass
+                del streaming_processes[camera_id]
+                # アクティブストリーム数を必ず減算
+                active_streams_count = max(0, active_streams_count - 1)
+                logging.info(f"カメラ {camera_id} のストリーミングプロセスを削除しました。アクティブストリーム: {active_streams_count}")
         # ストリーミングの監視データを削除
         if camera_id in hls_last_update:
             del hls_last_update[camera_id]
-            
         if camera_id in m3u8_last_size:
             del m3u8_last_size[camera_id]
-            
         if camera_id in restart_counts:
             del restart_counts[camera_id]
-        
         # 残っているffmpegプロセスを強制終了
         ffmpeg_utils.kill_ffmpeg_processes(camera_id)
-        
         # 古いセグメントファイルを削除
         cleanup_old_segments(camera_id)
-    
     except Exception as e:
         logging.error(f"Error cleaning up resources for camera {camera_id}: {e}")
 
